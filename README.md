@@ -1,4 +1,4 @@
-# 🚀 Red Team C2 Lab - Guía de Implementación
+# 🚀 Red Team C2 SpiderRed - Guía de Implementación
 
 **⚠️ Solo para entornos de laboratorio controlados con permiso explícito.**
 
