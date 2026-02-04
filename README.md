@@ -1,4 +1,3 @@
-```markdown
 # 🕷️ SpiderRed C2  
 **Experimental Command & Control Platform for Security Research**
 
@@ -25,20 +24,9 @@ No pretende competir con frameworks profesionales como **Cobalt Strike**, **Sliv
 
 ---
 
-## 🧠 Arquitectura
-
-```
-
-┌──────────────┐        Encrypted Beacon        ┌──────────────┐
-│  Windows     │  ───────────────────────────▶ │   Linux C2   │
-│  Agent       │   Custom TCP / Beaconing      │   Server     │
-│              │ ◀───────────────────────────  │              │
-└──────────────┘        Tasking / Commands      └──────────────┘
-
-```
 
 ### Componentes
-- **Agent (Windows)**: ejecución remota, persistencia, evasión básica
+- **Agent (Windows)**: ejecución remota, persistencia y evasión básica
 - **Server (Linux)**: gestión de agentes, cola de tareas y CLI interactiva
 
 ---
@@ -82,23 +70,20 @@ No pretende competir con frameworks profesionales como **Cobalt Strike**, **Sliv
 
 ## 🖥️ Comandos del Servidor
 
-```
+agents Listar agentes conectados
+info <id> Información del agente
+interact <id> Modo interactivo
+exec <id> <cmd> Ejecutar comando
+shell <id> Shell remota básica
+broadcast <cmd> Ejecutar comando en todos
+upload <id> <l> <r> Subir archivo
+download <id> <f> Descargar archivo
+persist <id> Activar persistencia
+tasks <id> Historial de tareas
+kill <id> Terminar agente
+clear Limpiar pantalla
+exit / quit Cerrar servidor
 
-agents                 Listar agentes conectados
-info <id>              Información del agente
-interact <id>          Modo interactivo
-exec <id> <cmd>        Ejecutar comando
-shell <id>             Shell remota básica
-broadcast <cmd>        Ejecutar comando en todos
-upload <id> <l> <r>    Subir archivo
-download <id> <f>      Descargar archivo
-persist <id>           Activar persistencia
-tasks <id>             Historial de tareas
-kill <id>              Terminar agente
-clear                  Limpiar pantalla
-exit / quit            Cerrar servidor
-
-````
 
 ---
 
@@ -158,40 +143,6 @@ exit / quit            Cerrar servidor
 ### Servidor (Linux)
 ```bash
 g++ -std=c++17 -pthread server.cpp -o c2_server
-````
-
-### Agente (Windows)
-
-```bat
 cl /EHsc /O2 /MT agent.cpp ^
   ws2_32.lib wininet.lib crypt32.lib bcrypt.lib advapi32.lib ^
   /SUBSYSTEM:WINDOWS
-```
-
----
-
-## 📈 Roadmap (Opcional)
-
-* Handshake asimétrico real
-* TLS con certificados
-* Protocolo estructurado (JSON / Protobuf)
-* Modularización de payloads
-* Telemetría defensiva
-* Exportación de eventos para SIEM
-
----
-
-## 🧠 Filosofía del Proyecto
-
-> *“Para detectar un C2, primero hay que entender cómo funciona.”*
-
-SpiderRed C2 **no busca ser indetectable**, sino **comprensible, auditable y mejorable**.
-
----
-
-## 📜 Licencia
-
-Uso exclusivo para **educación, investigación y entornos autorizados**.
-
-```
-```
